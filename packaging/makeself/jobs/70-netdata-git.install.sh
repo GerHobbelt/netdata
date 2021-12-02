@@ -30,7 +30,6 @@ run ./netdata-installer.sh \
   --install "${NETDATA_INSTALL_PARENT}" \
   --dont-wait \
   --dont-start-it \
-  --require-cloud \
   --use-system-protobuf \
   --dont-scrub-cflags-even-though-it-may-break-things
 
