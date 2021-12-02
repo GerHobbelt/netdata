@@ -2,14 +2,30 @@
 
 ## [**Next release**](https://github.com/netdata/netdata/tree/HEAD)
 
-[Full Changelog](https://github.com/netdata/netdata/compare/v1.31.0...HEAD)
+[Full Changelog](https://github.com/netdata/netdata/compare/v1.32.0...HEAD)
 
 **Merged pull requests:**
 
+- Fix token name in release draft workflow. [\#11847](https://github.com/netdata/netdata/pull/11847) ([Ferroin](https://github.com/Ferroin))
+- Bump static builds to use Alpine 3.15 as a base. [\#11836](https://github.com/netdata/netdata/pull/11836) ([Ferroin](https://github.com/Ferroin))
+- Remove Fedora 33 from CI. [\#11640](https://github.com/netdata/netdata/pull/11640) ([Ferroin](https://github.com/Ferroin))
+- Remove OpenSUSE Leap 15.2 from CI. [\#11600](https://github.com/netdata/netdata/pull/11600) ([Ferroin](https://github.com/Ferroin))
+
+## [v1.32.0](https://github.com/netdata/netdata/tree/v1.32.0) (2021-11-30)
+
+[Full Changelog](https://github.com/netdata/netdata/compare/v1.31.0...v1.32.0)
+
+**Merged pull requests:**
+
+- fix\(health\): `pihole\_blocklist\_gravity\_file` and `pihole\_status` info lines [\#11844](https://github.com/netdata/netdata/pull/11844) ([ilyam8](https://github.com/ilyam8))
+- Optional proto support fix [\#11840](https://github.com/netdata/netdata/pull/11840) ([underhood](https://github.com/underhood))
+- feat\(apps.plugin\): add consul to apps\_groups.conf [\#11839](https://github.com/netdata/netdata/pull/11839) ([ilyam8](https://github.com/ilyam8))
 - Add a note about pkg-config file location for freeipmi [\#11831](https://github.com/netdata/netdata/pull/11831) ([vlvkobal](https://github.com/vlvkobal))
+- Remove pihole\_blocked\_queries alert [\#11829](https://github.com/netdata/netdata/pull/11829) ([Ancairon](https://github.com/Ancairon))
 - Add commands to check and fix database corruption [\#11828](https://github.com/netdata/netdata/pull/11828) ([stelfrag](https://github.com/stelfrag))
 - Set NETDATA\_CONTAINER\_OS\_DETECTION properly [\#11827](https://github.com/netdata/netdata/pull/11827) ([MrZammler](https://github.com/MrZammler))
 - feat\(apps.plugin\): add aws to apps\_groups.conf [\#11826](https://github.com/netdata/netdata/pull/11826) ([ilyam8](https://github.com/ilyam8))
+- Updating ansible steps for clarity [\#11823](https://github.com/netdata/netdata/pull/11823) ([kickoke](https://github.com/kickoke))
 - Don't use wc struct if it might not exist [\#11820](https://github.com/netdata/netdata/pull/11820) ([MrZammler](https://github.com/MrZammler))
 - specify pip3 when installing git-semver package [\#11817](https://github.com/netdata/netdata/pull/11817) ([maneamarius](https://github.com/maneamarius))
 - Cleanup compilation warnings [\#11810](https://github.com/netdata/netdata/pull/11810) ([stelfrag](https://github.com/stelfrag))
@@ -151,21 +167,15 @@
 - add proc\_net\_sockstat and sockstat6 charts info [\#11567](https://github.com/netdata/netdata/pull/11567) ([ilyam8](https://github.com/ilyam8))
 - Disable eBPF compilation in different platforms [\#11566](https://github.com/netdata/netdata/pull/11566) ([thiagoftsm](https://github.com/thiagoftsm))
 - add proc\_net\_snmp6 charts info [\#11565](https://github.com/netdata/netdata/pull/11565) ([ilyam8](https://github.com/ilyam8))
-- add proc\_net\_sctp\_snmp charts info [\#11564](https://github.com/netdata/netdata/pull/11564) ([ilyam8](https://github.com/ilyam8))
 - eBPF Shared Memory system call tracking [\#11560](https://github.com/netdata/netdata/pull/11560) ([UmanShahzad](https://github.com/UmanShahzad))
 - Add shared memory to cgroup [\#11559](https://github.com/netdata/netdata/pull/11559) ([thiagoftsm](https://github.com/thiagoftsm))
-- add proc\_net\_snmp charts info [\#11557](https://github.com/netdata/netdata/pull/11557) ([ilyam8](https://github.com/ilyam8))
 - End of support for Ubuntu 16.04 [\#11556](https://github.com/netdata/netdata/pull/11556) ([Ferroin](https://github.com/Ferroin))
-- add proc\_net\_netstat charts info [\#11554](https://github.com/netdata/netdata/pull/11554) ([ilyam8](https://github.com/ilyam8))
 - Add alert message support for ACLK new architecture [\#11552](https://github.com/netdata/netdata/pull/11552) ([MrZammler](https://github.com/MrZammler))
 - Anomaly Detection MVP [\#11548](https://github.com/netdata/netdata/pull/11548) ([vkalintiris](https://github.com/vkalintiris))
-- Update ebpf dashboard [\#11547](https://github.com/netdata/netdata/pull/11547) ([thiagoftsm](https://github.com/thiagoftsm))
-- add proc\_net\_ip\_vs\_stats charts info [\#11546](https://github.com/netdata/netdata/pull/11546) ([ilyam8](https://github.com/ilyam8))
 - Fix handling of claiming in kickstart script when running as non-root. [\#11507](https://github.com/netdata/netdata/pull/11507) ([Ferroin](https://github.com/Ferroin))
 - Added static builds for ARMv7l and ARMv8a [\#11490](https://github.com/netdata/netdata/pull/11490) ([Ferroin](https://github.com/Ferroin))
 - Update alarms info [\#11481](https://github.com/netdata/netdata/pull/11481) ([ilyam8](https://github.com/ilyam8))
 - Announce proto capability and enable if cloud supports [\#11476](https://github.com/netdata/netdata/pull/11476) ([underhood](https://github.com/underhood))
-- Add chart message support for ACLK new architecture [\#11447](https://github.com/netdata/netdata/pull/11447) ([stelfrag](https://github.com/stelfrag))
 
 ## [v1.31.0](https://github.com/netdata/netdata/tree/v1.31.0) (2021-05-19)
 
