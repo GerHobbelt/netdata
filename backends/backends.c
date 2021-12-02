@@ -1069,7 +1069,7 @@ void *backends_main(void *ptr) {
                     } else {
                         http_host = remote_hostname;
                     }
-                    debug("set http_host head", http_host);
+                    debug(D_BACKEND, "set http_host head %s", http_host);
 
                     buffer_flush(b);
                     buffer_need_bytes(b, data_size);
