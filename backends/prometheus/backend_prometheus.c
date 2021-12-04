@@ -585,7 +585,8 @@ inline static void remote_write_split_words(char *str, char **words, int max_wor
         if(*s)
             words[i] = s;
 
-        while(*s && !isspace(*s) && *s != ',') s++; // find the end of the tag value
+        // remove ispacse here, agora uses spaces to enhance readability
+        while(*s && *s != ',') s++; // find the end of the tag value
 
         if(*s && *s != ',') {
             words[i] = NULL;
