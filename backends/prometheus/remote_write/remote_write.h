@@ -17,6 +17,8 @@ void backends_add_tag(char *tag, char *value);
 
 void backends_add_metric(const char *name, const char *chart, const char *family, const char *dimension, const char *instance, const double value, const int64_t timestamp);
 
+void backends_add_variable(const char *name, const char *instance, const double value, const int64_t timestamp);
+
 size_t backends_get_write_request_size();
 
 int backends_pack_write_request(char *buffer, size_t *size);

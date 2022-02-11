@@ -17,6 +17,9 @@ ExecStartPre=/bin/mkdir -p @localstatedir_POST@/cache/netdata
 ExecStartPre=/bin/chown -R netdata:netdata @localstatedir_POST@/cache/netdata
 ExecStartPre=/bin/mkdir -p @localstatedir_POST@/run/netdata
 ExecStartPre=/bin/chown -R netdata:netdata @localstatedir_POST@/run/netdata
+# support magic ip so statsd can be used within container network
+ExecStartPre=/bin/bash -c 'ip link add netdata type dummy || echo "inf already present"; ip addr add 169.254.254.254/32 dev netdata || echo "ip addr already present"'
+ExecStopPost=/bin/bash -c 'ip addr del 169.254.254.254/32 dev netdata || ip addr del 169.254.254.254/32  dev $(awk \'$2 == 00000000 { print $1 }\' /proc/net/route) || echo "unable clean up if addr" ; ip link del netdata || echo "unable clean up vinf"'
 PermissionsStartOnly=true
 
 # saving a big db on slow disks may need some time
@@ -30,7 +33,7 @@ RestartSec=30
 # netdata (via [global].OOM score in netdata.conf) can only increase the value set here.
 # To decrease it, set the minimum here and set the same or a higher value in netdata.conf.
 # Valid values: -1000 (never kill netdata) to 1000 (always kill netdata).
-OOMScoreAdjust=1000
+OOMScoreAdjust=0
 
 # Valid policies: other (the system default) | batch | idle | fifo | rr
 # To give netdata the max priority, set CPUSchedulingPolicy=rr and CPUSchedulingPriority=99
@@ -64,6 +67,13 @@ CapabilityBoundingSet=CAP_NET_RAW
 CapabilityBoundingSet=CAP_SYS_CHROOT
 # is required for nfacct plugin (bandwidth accounting)
 CapabilityBoundingSet=CAP_NET_ADMIN
+# is required for smartctl, storcli64, lsscsi
+CapabilityBoundingSet=CAP_AUDIT_CONTROL
+CapabilityBoundingSet=CAP_AUDIT_READ
+CapabilityBoundingSet=CAP_AUDIT_WRITE
+CapabilityBoundingSet=CAP_SETGID
+CapabilityBoundingSet=CAP_SETUID
+CapabilityBoundingSet=CAP_SYS_RAWIO
 
 # Sandboxing
 ProtectSystem=full

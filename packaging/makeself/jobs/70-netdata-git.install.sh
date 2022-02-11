@@ -9,7 +9,7 @@ cd "${NETDATA_SOURCE_PATH}" || exit 1
 if [ "${NETDATA_BUILD_WITH_DEBUG}" -eq 0 ]; then
   export CFLAGS="-static -O3 -I/openssl-static/include"
 else
-  export CFLAGS="-static -O1 -ggdb -Wall -Wextra -Wformat-signedness -fstack-protector-all -D_FORTIFY_SOURCE=2 -DNETDATA_INTERNAL_CHECKS=1 -I/openssl-static/include"
+  export CFLAGS="-static -O1 -ggdb3 -Wall -Wextra -Wformat-signedness -fstack-protector-all -D_FORTIFY_SOURCE=2 -DNETDATA_INTERNAL_CHECKS=1 -I/openssl-static/include"
 fi
 
 export LDFLAGS="-static -L/openssl-static/lib"
@@ -30,7 +30,6 @@ run ./netdata-installer.sh \
   --install "${NETDATA_INSTALL_PARENT}" \
   --dont-wait \
   --dont-start-it \
-  --require-cloud \
   --use-system-protobuf \
   --dont-scrub-cflags-even-though-it-may-break-things
 
