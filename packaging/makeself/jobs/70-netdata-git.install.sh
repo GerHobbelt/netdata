@@ -31,6 +31,8 @@ run ./netdata-installer.sh \
   --dont-wait \
   --dont-start-it \
   --use-system-protobuf \
+  --disable-cloud \
+  --disable-telemetry \
   --dont-scrub-cflags-even-though-it-may-break-things
 
 # shellcheck disable=SC2015
