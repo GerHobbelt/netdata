@@ -32,7 +32,7 @@ run ./netdata-installer.sh \
   --dont-start-it \
   --use-system-protobuf \
   --dont-scrub-cflags-even-though-it-may-break-things \
-  --one-time-build
+  --one-time-build \
   --disable-cloud \
   --disable-telemetry \
 
