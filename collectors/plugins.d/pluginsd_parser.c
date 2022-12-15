@@ -96,7 +96,7 @@ PARSER_RC pluginsd_disable_action(void *user)
 }
 
 
-PARSER_RC pluginsd_variable_action(void *user, RRDHOST *host, RRDSET *st, char *name, int global, calculated_number value)
+PARSER_RC pluginsd_variable_action(void *user, RRDHOST *host, RRDSET *st, char *name, int global, NETDATA_DOUBLE value)
 {
     UNUSED(user);
 
@@ -125,41 +125,62 @@ PARSER_RC pluginsd_dimension_action(void *user, RRDSET *st, char *id, char *name
     UNUSED(algorithm);
 
     RRDDIM *rd = rrddim_add(st, id, name, multiplier, divisor, algorithm_type);
-    rrddim_flag_clear(rd, RRDDIM_FLAG_HIDDEN);
+    int unhide_dimension = 1;
+
     rrddim_flag_clear(rd, RRDDIM_FLAG_DONT_DETECT_RESETS_OR_OVERFLOWS);
     if (options && *options) {
         if (strstr(options, "obsolete") != NULL)
             rrddim_is_obsolete(st, rd);
         else
             rrddim_isnot_obsolete(st, rd);
-        if (strstr(options, "hidden") != NULL)
-            rrddim_flag_set(rd, RRDDIM_FLAG_HIDDEN);
+
+        unhide_dimension = !strstr(options, "hidden");
+
         if (strstr(options, "noreset") != NULL)
             rrddim_flag_set(rd, RRDDIM_FLAG_DONT_DETECT_RESETS_OR_OVERFLOWS);
         if (strstr(options, "nooverflow") != NULL)
             rrddim_flag_set(rd, RRDDIM_FLAG_DONT_DETECT_RESETS_OR_OVERFLOWS);
-    } else {
+    } else
         rrddim_isnot_obsolete(st, rd);
+
+    if (likely(unhide_dimension)) {
+        rrddim_flag_clear(rd, RRDDIM_FLAG_HIDDEN);
+        if (rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN)) {
+            (void)sql_set_dimension_option(&rd->metric_uuid, NULL);
+            rrddim_flag_clear(rd, RRDDIM_FLAG_META_HIDDEN);
+        }
+    } else {
+        rrddim_flag_set(rd, RRDDIM_FLAG_HIDDEN);
+        if (!rrddim_flag_check(rd, RRDDIM_FLAG_META_HIDDEN)) {
+           (void)sql_set_dimension_option(&rd->metric_uuid, "hidden");
+            rrddim_flag_set(rd, RRDDIM_FLAG_META_HIDDEN);
+        }
     }
     return PARSER_RC_OK;
 }
 
-PARSER_RC pluginsd_label_action(void *user, char *key, char *value, LABEL_SOURCE source)
+PARSER_RC pluginsd_label_action(void *user, char *key, char *value, RRDLABEL_SRC source)
 {
 
-    ((PARSER_USER_OBJECT *) user)->new_labels = add_label_to_list(((PARSER_USER_OBJECT *) user)->new_labels, key, value, source);
+    if(unlikely(!((PARSER_USER_OBJECT *) user)->new_host_labels))
+        ((PARSER_USER_OBJECT *) user)->new_host_labels = rrdlabels_create();
+
+    rrdlabels_add(((PARSER_USER_OBJECT *)user)->new_host_labels, key, value, source);
 
     return PARSER_RC_OK;
 }
 
-PARSER_RC pluginsd_clabel_action(void *user, char *key, char *value, LABEL_SOURCE source)
+PARSER_RC pluginsd_clabel_action(void *user, char *key, char *value, RRDLABEL_SRC source)
 {
-    ((PARSER_USER_OBJECT *) user)->chart_labels = add_label_to_list(((PARSER_USER_OBJECT *) user)->chart_labels, key, value, source);
+    if(unlikely(!((PARSER_USER_OBJECT *) user)->new_chart_labels))
+        ((PARSER_USER_OBJECT *) user)->new_chart_labels = rrdlabels_create();
+
+    rrdlabels_add(((PARSER_USER_OBJECT *)user)->new_chart_labels, key, value, source);
 
     return PARSER_RC_OK;
 }
 
-PARSER_RC pluginsd_clabel_commit_action(void *user, RRDHOST *host, struct label *new_labels)
+PARSER_RC pluginsd_clabel_commit_action(void *user, RRDHOST *host, DICTIONARY *new_chart_labels)
 {
     RRDSET *st = ((PARSER_USER_OBJECT *)user)->st;
     if (unlikely(!st)) {
@@ -167,21 +188,21 @@ PARSER_RC pluginsd_clabel_commit_action(void *user, RRDHOST *host, struct label 
         return PARSER_RC_OK;
     }
 
-    rrdset_update_labels(st, new_labels);
+    rrdset_update_rrdlabels(st, new_chart_labels);
+
     return PARSER_RC_OK;
 }
 
-PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, struct label *new_labels)
+PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, DICTIONARY *new_host_labels)
 {
     UNUSED(user);
 
-    if (!host->labels.head) {
-        host->labels.head = new_labels;
-    } else {
-        rrdhost_rdlock(host);
-        replace_label_list(&host->labels, new_labels);
-        rrdhost_unlock(host);
-    }
+    if(!host->host_labels)
+        host->host_labels = rrdlabels_create();
+
+    rrdlabels_migrate_to_these(host->host_labels, new_host_labels);
+    sql_store_host_labels(host);
+
     return PARSER_RC_OK;
 }
 
@@ -453,7 +474,7 @@ PARSER_RC pluginsd_variable(char **words, void *user, PLUGINSD_ACTION  *plugins_
 {
     char *name = words[1];
     char *value = words[2];
-    calculated_number v;
+    NETDATA_DOUBLE v;
 
     RRDSET *st = ((PARSER_USER_OBJECT *) user)->st;
     RRDHOST *host = ((PARSER_USER_OBJECT *) user)->host;
@@ -493,7 +514,7 @@ PARSER_RC pluginsd_variable(char **words, void *user, PLUGINSD_ACTION  *plugins_
     }
 
     char *endptr = NULL;
-    v = (calculated_number)str2ld(value, &endptr);
+    v = (NETDATA_DOUBLE)str2ndd(value, &endptr);
     if (unlikely(endptr && *endptr)) {
         if (endptr == value)
             error(
@@ -600,14 +621,15 @@ PARSER_RC pluginsd_clabel_commit(char **words, void *user, PLUGINSD_ACTION  *plu
     RRDHOST *host = ((PARSER_USER_OBJECT *) user)->host;
     debug(D_PLUGINSD, "requested to commit chart labels");
 
-    struct label *chart_labels = ((PARSER_USER_OBJECT *)user)->chart_labels;
-    ((PARSER_USER_OBJECT *)user)->chart_labels = NULL;
+    PARSER_RC rc = PARSER_RC_OK;
 
-    if (plugins_action->clabel_commit_action) {
-        return plugins_action->clabel_commit_action(user, host, chart_labels);
-    }
+    if (plugins_action->clabel_commit_action)
+        rc = plugins_action->clabel_commit_action(user, host, ((PARSER_USER_OBJECT *)user)->new_chart_labels);
 
-    return PARSER_RC_OK;
+    rrdlabels_destroy(((PARSER_USER_OBJECT *)user)->new_chart_labels);
+    ((PARSER_USER_OBJECT *)user)->new_chart_labels = NULL;
+
+    return rc;
 }
 
 PARSER_RC pluginsd_overwrite(char **words, void *user, PLUGINSD_ACTION  *plugins_action)
@@ -615,16 +637,17 @@ PARSER_RC pluginsd_overwrite(char **words, void *user, PLUGINSD_ACTION  *plugins
     UNUSED(words);
 
     RRDHOST *host = ((PARSER_USER_OBJECT *) user)->host;
-    debug(D_PLUGINSD, "requested a OVERWRITE a variable");
+    debug(D_PLUGINSD, "requested to OVERWRITE host labels");
 
-    struct label *new_labels = ((PARSER_USER_OBJECT *)user)->new_labels;
-    ((PARSER_USER_OBJECT *)user)->new_labels = NULL;
+    PARSER_RC rc = PARSER_RC_OK;
 
-    if (plugins_action->overwrite_action) {
-        return plugins_action->overwrite_action(user, host, new_labels);
-    }
+    if (plugins_action->overwrite_action)
+        rc = plugins_action->overwrite_action(user, host, ((PARSER_USER_OBJECT *)user)->new_host_labels);
 
-    return PARSER_RC_OK;
+    rrdlabels_destroy(((PARSER_USER_OBJECT *)user)->new_host_labels);
+    ((PARSER_USER_OBJECT *)user)->new_host_labels = NULL;
+
+    return rc;
 }
 
 PARSER_RC pluginsd_guid(char **words, void *user, PLUGINSD_ACTION *plugins_action)
@@ -720,6 +743,11 @@ PARSER_RC metalog_pluginsd_host(char **words, void *user, PLUGINSD_ACTION  *plug
     return PARSER_RC_OK;
 }
 
+static void pluginsd_process_thread_cleanup(void *ptr) {
+    PARSER *parser = (PARSER *)ptr;
+    parser_destroy(parser);
+}
+
 // New plugins.d parser
 
 inline size_t pluginsd_process(RRDHOST *host, struct plugind *cd, FILE *fp, int trust_durations)
@@ -738,50 +766,50 @@ inline size_t pluginsd_process(RRDHOST *host, struct plugind *cd, FILE *fp, int 
     }
     clearerr(fp);
 
-    PARSER_USER_OBJECT *user = callocz(1, sizeof(*user));
-    ((PARSER_USER_OBJECT *) user)->enabled = cd->enabled;
-    ((PARSER_USER_OBJECT *) user)->host = host;
-    ((PARSER_USER_OBJECT *) user)->cd = cd;
-    ((PARSER_USER_OBJECT *) user)->trust_durations = trust_durations;
+    PARSER_USER_OBJECT user = {
+        .enabled = cd->enabled,
+        .host = host,
+        .cd = cd,
+        .trust_durations = trust_durations
+    };
 
-    PARSER *parser = parser_init(host, user, fp, PARSER_INPUT_SPLIT);
+    PARSER *parser = parser_init(host, &user, fp, PARSER_INPUT_SPLIT);
 
-    if (unlikely(!parser)) {
-        error("Failed to initialize parser");
-        cd->serial_failures++;
-        return 0;
-    }
+    // this keeps the parser with its current value
+    // so, parser needs to be allocated before pushing it
+    netdata_thread_cleanup_push(pluginsd_process_thread_cleanup, parser);
 
-    parser->plugins_action->begin_action     = &pluginsd_begin_action;
-    parser->plugins_action->flush_action     = &pluginsd_flush_action;
-    parser->plugins_action->end_action       = &pluginsd_end_action;
-    parser->plugins_action->disable_action   = &pluginsd_disable_action;
-    parser->plugins_action->variable_action  = &pluginsd_variable_action;
-    parser->plugins_action->dimension_action = &pluginsd_dimension_action;
-    parser->plugins_action->label_action     = &pluginsd_label_action;
-    parser->plugins_action->overwrite_action = &pluginsd_overwrite_action;
-    parser->plugins_action->chart_action     = &pluginsd_chart_action;
-    parser->plugins_action->set_action       = &pluginsd_set_action;
+    parser->plugins_action->begin_action          = &pluginsd_begin_action;
+    parser->plugins_action->flush_action          = &pluginsd_flush_action;
+    parser->plugins_action->end_action            = &pluginsd_end_action;
+    parser->plugins_action->disable_action        = &pluginsd_disable_action;
+    parser->plugins_action->variable_action       = &pluginsd_variable_action;
+    parser->plugins_action->dimension_action      = &pluginsd_dimension_action;
+    parser->plugins_action->label_action          = &pluginsd_label_action;
+    parser->plugins_action->overwrite_action      = &pluginsd_overwrite_action;
+    parser->plugins_action->chart_action          = &pluginsd_chart_action;
+    parser->plugins_action->set_action            = &pluginsd_set_action;
+    parser->plugins_action->clabel_commit_action  = &pluginsd_clabel_commit_action;
+    parser->plugins_action->clabel_action         = &pluginsd_clabel_action;
 
-    user->parser = parser;
+    user.parser = parser;
 
     while (likely(!parser_next(parser))) {
         if (unlikely(netdata_exit || parser_action(parser,  NULL)))
             break;
     }
-    info("PARSER ended");
 
-    parser_destroy(parser);
+    // free parser with the pop function
+    netdata_thread_cleanup_pop(1);
 
-    cd->enabled = ((PARSER_USER_OBJECT *) user)->enabled;
-    size_t count = ((PARSER_USER_OBJECT *) user)->count;
-
-    freez(user);
+    cd->enabled = user.enabled;
+    size_t count = user.count;
 
     if (likely(count)) {
         cd->successful_collections += count;
         cd->serial_failures = 0;
-    } else
+    }
+    else
         cd->serial_failures++;
 
     return count;

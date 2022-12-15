@@ -10,9 +10,6 @@ Welcome to the collector configuration reference guide.
 This guide contains detailed information about enabling/disabling plugins or modules, in addition a quick reference to
 the internal plugins API.
 
-To learn the basics of collecting metrics from other applications and services, see the [collector
-quickstart](QUICKSTART.md).
-
 ## Netdata's collector architecture
 
 Netdata has an intricate system for organizing and managing its collectors. **Collectors** are the processes/programs
@@ -23,8 +20,7 @@ MySQL database, among many others.
 
 For most users, enabling individual collectors for the application/service you're interested in is far more important
 than knowing which plugin it uses. See our [collectors list](/collectors/COLLECTORS.md) to see whether your favorite app/service has
-a collector, and then read the [collectors quickstart](/collectors/QUICKSTART.md) and the documentation for that specific collector
-to figure out how to enable it.
+a collector, and then read the documentation for that specific collector to figure out how to enable it.
 
 There are three types of plugins:
 
@@ -46,7 +42,6 @@ However, there are cases that auto-detection fails. Usually, the reason is that 
 allow Netdata to connect. In most of the cases, allowing the user `netdata` from `localhost` to connect and collect
 metrics, will automatically enable data collection for the application in question (it will require a Netdata restart).
 
-View our [collectors quickstart](/collectors/QUICKSTART.md) for explicit details on enabling and configuring collector modules.
 
 ## Troubleshoot a collector
 
@@ -72,9 +67,6 @@ field contains `go.d`, that collector uses the Go orchestrator.
 # Python orchestrator (python.d.plugin)
 ./python.d.plugin <MODULE_NAME> debug trace
 
-# Node orchestrator (node.d.plugin)
-./node.d.plugin debug 1 <MODULE_NAME>
-
 # Bash orchestrator (bash.d.plugin)
 ./charts.d.plugin debug 1 <MODULE_NAME>
 ```
@@ -92,8 +84,6 @@ This section features a list of Netdata's plugins, with a boolean setting to ena
 
 ```conf
 [plugins]
-	# PATH environment variable = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/var/lib/snapd/snap/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin
-	# PYTHONPATH environment variable = 
 	# proc = yes
 	# diskspace = yes
 	# timex = yes
@@ -105,7 +95,6 @@ This section features a list of Netdata's plugins, with a boolean setting to ena
 	# slabinfo = no
 	# fping = yes
 	# ioping = yes
-	# node.d = yes
 	# python.d = yes
 	# go.d = yes
 	# apps = yes
@@ -184,4 +173,3 @@ through this, is to examine what other similar plugins do.
 
 You can add custom collectors by following the [external plugins documentation](/collectors/plugins.d/README.md).
 
-[![analytics](https://www.google-analytics.com/collect?v=1&aip=1&t=pageview&_s=1&ds=github&dr=https%3A%2F%2Fgithub.com%2Fnetdata%2Fnetdata&dl=https%3A%2F%2Fmy-netdata.io%2Fgithub%2Fcollectors%2REFERENCE&_u=MAC~&cid=5792dfd7-8dc4-476b-af31-da2fdb9f93d2&tid=UA-64295674-3)]()

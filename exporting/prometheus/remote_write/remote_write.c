@@ -97,6 +97,7 @@ int init_prometheus_remote_write_instance(struct instance *instance)
     instance->start_chart_formatting = format_chart_prometheus_remote_write;
     instance->metric_formatting = format_dimension_prometheus_remote_write;
     instance->end_chart_formatting = NULL;
+    instance->variables_formatting = format_variables_prometheus_remote_write;
     instance->end_host_formatting = NULL;
     instance->end_batch_formatting = format_batch_prometheus_remote_write;
 
@@ -134,6 +135,25 @@ int init_prometheus_remote_write_instance(struct instance *instance)
     return 0;
 }
 
+struct format_remote_write_label_callback {
+    struct instance *instance;
+    void *write_request;
+};
+
+static int format_remote_write_label_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
+    struct format_remote_write_label_callback *d = (struct format_remote_write_label_callback *)data;
+
+    if (!should_send_label(d->instance, ls)) return 0;
+
+    char k[PROMETHEUS_ELEMENT_MAX + 1];
+    char v[PROMETHEUS_ELEMENT_MAX + 1];
+
+    prometheus_name_copy(k, name, PROMETHEUS_ELEMENT_MAX);
+    prometheus_label_copy(v, value, PROMETHEUS_ELEMENT_MAX);
+    add_label(d->write_request, k, v);
+    return 1;
+}
+
 /**
  * Format host data for Prometheus Remote Write connector
  *
@@ -157,23 +177,25 @@ int format_host_prometheus_remote_write(struct instance *instance, RRDHOST *host
     add_host_info(
         connector_specific_data->write_request,
         "netdata_info", hostname, host->program_name, host->program_version, now_realtime_usec() / USEC_PER_MS);
-
+    
     if (unlikely(sending_labels_configured(instance))) {
-        rrdhost_check_rdlock(host);
-        netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-        for (struct label *label = host->labels.head; label; label = label->next) {
-            if (!should_send_label(instance, label))
-                continue;
+        struct format_remote_write_label_callback tmp = {
+            .write_request = connector_specific_data->write_request,
+            .instance = instance
+        };
+        rrdlabels_walkthrough_read(host->host_labels, format_remote_write_label_callback, &tmp);
+    }
 
-            char key[PROMETHEUS_ELEMENT_MAX + 1];
-            prometheus_name_copy(key, label->key, PROMETHEUS_ELEMENT_MAX);
-
-            char value[PROMETHEUS_ELEMENT_MAX + 1];
-            prometheus_label_copy(value, label->value, PROMETHEUS_ELEMENT_MAX);
-
-            add_label(connector_specific_data->write_request, key, value);
-        }
-        netdata_rwlock_unlock(&host->labels.labels_rwlock);
+    add_host_info(
+        connector_specific_data->write_request,
+        "netdata_host_tags_info", hostname, host->program_name, host->program_version, now_realtime_usec() / USEC_PER_MS);
+    
+    if (unlikely(sending_labels_configured(instance))) {
+        struct format_remote_write_label_callback tmp = {
+            .write_request = connector_specific_data->write_request,
+            .instance = instance
+        };
+        rrdlabels_walkthrough_read(host->host_labels, format_remote_write_label_callback, &tmp);
     }
 
     return 0;
@@ -236,7 +258,7 @@ int format_dimension_prometheus_remote_write(struct instance *instance, RRDDIM *
 
             if (unlikely(rd->last_collected_time.tv_sec < instance->after)) {
                 debug(
-                    D_BACKEND,
+                    D_EXPORTING,
                     "EXPORTING: not sending dimension '%s' of chart '%s' from host '%s', "
                     "its last data collection (%lu) is not within our timeframe (%lu to %lu)",
                     rd->id, rd->rrdset->id,
@@ -284,7 +306,7 @@ int format_dimension_prometheus_remote_write(struct instance *instance, RRDDIM *
             // we need average or sum of the data
 
             time_t last_t = instance->before;
-            calculated_number value = exporting_calculate_value_from_stored_data(instance, rd, &last_t);
+            NETDATA_DOUBLE value = exporting_calculate_value_from_stored_data(instance, rd, &last_t);
 
             if (!isnan(value) && !isinf(value)) {
                 if (EXPORTING_OPTIONS_DATA_SOURCE(instance->config.options) == EXPORTING_SOURCE_DATA_AVERAGE)
@@ -309,6 +331,49 @@ int format_dimension_prometheus_remote_write(struct instance *instance, RRDDIM *
     }
 
     return 0;
+}
+
+int format_variable_prometheus_remote_write_callback(RRDVAR *rv, void *data) {
+    struct prometheus_remote_write_variables_callback_options *opts = data;
+
+    if (rv->options & (RRDVAR_OPTION_CUSTOM_HOST_VAR | RRDVAR_OPTION_CUSTOM_CHART_VAR)) {        
+        RRDHOST *host = opts->host;
+        struct instance *instance = opts->instance;
+        struct simple_connector_data *simple_connector_data =
+            (struct simple_connector_data *)instance->connector_specific_data;
+        struct prometheus_remote_write_specific_data *connector_specific_data =
+            (struct prometheus_remote_write_specific_data *)simple_connector_data->connector_specific_data;
+
+        char name[PROMETHEUS_LABELS_MAX + 1];
+        char *suffix = "";
+
+        prometheus_name_copy(context, rv->name, PROMETHEUS_ELEMENT_MAX);
+        snprintf(name, PROMETHEUS_LABELS_MAX, "%s_%s%s", instance->config.prefix, context, suffix);
+
+        NETDATA_DOUBLE value = rrdvar2number(rv);
+        add_variable(connector_specific_data->write_request, name,
+            (host == localhost) ? instance->config.hostname : host->hostname, value, opts->now / USEC_PER_MS);
+    }
+
+    return 0;
+}
+
+/**
+ * Format a variable for Prometheus Remote Write connector
+ * 
+ * @param rv a variable.
+ * @param instance an instance data structure.
+ * @return Always returns 0.
+ */ 
+int format_variables_prometheus_remote_write(struct instance *instance, RRDHOST *host)
+{
+    struct prometheus_remote_write_variables_callback_options opt = {
+        .host = host,
+        .instance = instance,
+        .now = now_realtime_usec(),
+    };
+
+    return foreach_host_variable_callback(host, format_variable_prometheus_remote_write_callback, &opt);
 }
 
 /**
@@ -339,7 +404,6 @@ int format_batch_prometheus_remote_write(struct instance *instance)
         return 1;
     }
     buffer->len = data_size;
-    instance->stats.buffered_bytes = (collected_number)buffer_strlen(buffer);
 
     simple_connector_end_batch(instance);
 

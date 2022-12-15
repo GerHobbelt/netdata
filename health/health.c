@@ -11,6 +11,12 @@ static struct {
     ALARM_ENTRY *tail; // latest
 } alarm_notifications_in_progress = {NULL, NULL};
 
+typedef struct active_alerts {
+    char *name;
+    time_t last_status_change;
+    RRDCALC_STATUS status;
+} active_alerts_t;
+
 static inline void enqueue_alarm_notify_in_progress(ALARM_ENTRY *ae)
 {
     ae->prev_in_progress = NULL;
@@ -58,7 +64,7 @@ static inline void unlink_alarm_notify_in_progress(ALARM_ENTRY *ae)
 inline char *health_user_config_dir(void) {
     char buffer[FILENAME_MAX + 1];
     snprintfz(buffer, FILENAME_MAX, "%s/health.d", netdata_configured_user_config_dir);
-    return config_get(CONFIG_SECTION_HEALTH, "health configuration directory", buffer);
+    return config_get(CONFIG_SECTION_DIRECTORIES, "health config", buffer);
 }
 
 /**
@@ -71,7 +77,7 @@ inline char *health_user_config_dir(void) {
 inline char *health_stock_config_dir(void) {
     char buffer[FILENAME_MAX + 1];
     snprintfz(buffer, FILENAME_MAX, "%s/health.d", netdata_configured_stock_config_dir);
-    return config_get(CONFIG_SECTION_HEALTH, "stock health configuration directory", buffer);
+    return config_get(CONFIG_SECTION_DIRECTORIES, "stock health config", buffer);
 }
 
 /**
@@ -219,10 +225,8 @@ static void health_reload_host(RRDHOST *host) {
  * Reload the host configuration for all hosts.
  */
 void health_reload(void) {
-#ifdef ENABLE_ACLK
-    if (netdata_cloud_setting)
-        aclk_single_update_disable();
-#endif
+    sql_refresh_hashes();
+
     rrd_rdlock();
 
     RRDHOST *host;
@@ -232,11 +236,7 @@ void health_reload(void) {
     rrd_unlock();
 #ifdef ENABLE_ACLK
     if (netdata_cloud_setting) {
-        aclk_single_update_enable();
-        aclk_alarm_reload();
-#ifdef ENABLE_NEW_CLOUD_PROTOCOL
         aclk_alert_reloaded = 1;
-#endif
     }
 #endif
 }
@@ -244,13 +244,22 @@ void health_reload(void) {
 // ----------------------------------------------------------------------------
 // health main thread and friends
 
-static inline RRDCALC_STATUS rrdcalc_value2status(calculated_number n) {
+static inline RRDCALC_STATUS rrdcalc_value2status(NETDATA_DOUBLE n) {
     if(isnan(n) || isinf(n)) return RRDCALC_STATUS_UNDEFINED;
     if(n) return RRDCALC_STATUS_RAISED;
     return RRDCALC_STATUS_CLEAR;
 }
 
 #define ALARM_EXEC_COMMAND_LENGTH 8192
+#define ACTIVE_ALARMS_LIST_EXAMINE 500
+#define ACTIVE_ALARMS_LIST 15
+
+static inline int compare_active_alerts(const void * a, const void * b) {
+    active_alerts_t *active_alerts_a = (active_alerts_t *)a;
+    active_alerts_t *active_alerts_b = (active_alerts_t *)b;
+
+    return ( active_alerts_b->last_status_change - active_alerts_a->last_status_change );
+}
 
 static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
     ae->flags |= HEALTH_ENTRY_FLAG_PROCESSED;
@@ -316,31 +325,28 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
     RRDCALC *rc;
     EVAL_EXPRESSION *expr=NULL;
     BUFFER *warn_alarms, *crit_alarms;
+    active_alerts_t *active_alerts = callocz(ACTIVE_ALARMS_LIST_EXAMINE, sizeof(active_alerts_t));
 
     warn_alarms = buffer_create(NETDATA_WEB_RESPONSE_INITIAL_SIZE);
     crit_alarms = buffer_create(NETDATA_WEB_RESPONSE_INITIAL_SIZE);
 
-    for(rc = host->alarms; rc ; rc = rc->next) {
+    for(rc = host->alarms; rc && (n_warn + n_crit) < ACTIVE_ALARMS_LIST_EXAMINE ; rc = rc->next) {
         if(unlikely(!rc->rrdset || !rc->rrdset->last_collected_time.tv_sec))
             continue;
 
         if (unlikely(rc->status == RRDCALC_STATUS_WARNING)) {
             if (likely(ae->alarm_id != rc->id) || likely(ae->alarm_event_id != rc->next_event_id - 1)) {
-                if (n_warn)
-                    buffer_strcat(warn_alarms, ",");
-                buffer_strcat(warn_alarms, rc->name);
-                buffer_strcat(warn_alarms, "=");
-                buffer_snprintf(warn_alarms, 11, "%"PRId64"", (int64_t)rc->last_status_change);
+                active_alerts[n_warn+n_crit].name = rc->name;
+                active_alerts[n_warn+n_crit].last_status_change = rc->last_status_change;
+                active_alerts[n_warn+n_crit].status = rc->status;
                 n_warn++;
             } else if (ae->alarm_id == rc->id)
                 expr = rc->warning;
         } else if (unlikely(rc->status == RRDCALC_STATUS_CRITICAL)) {
             if (likely(ae->alarm_id != rc->id) || likely(ae->alarm_event_id != rc->next_event_id - 1)) {
-                if (n_crit)
-                    buffer_strcat(crit_alarms, ",");
-                buffer_strcat(crit_alarms, rc->name);
-                buffer_strcat(crit_alarms, "=");
-                buffer_snprintf(crit_alarms, 11, "%"PRId64"", (int64_t)rc->last_status_change);
+                active_alerts[n_warn+n_crit].name = rc->name;
+                active_alerts[n_warn+n_crit].last_status_change = rc->last_status_change;
+                active_alerts[n_warn+n_crit].status = rc->status;
                 n_crit++;
             } else if (ae->alarm_id == rc->id)
                 expr = rc->critical;
@@ -350,9 +356,34 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
         }
     }
 
+    if (n_warn+n_crit>1)
+        qsort (active_alerts, n_warn+n_crit, sizeof(active_alerts_t), compare_active_alerts);
+
+    int count_w = 0, count_c = 0;
+    while (count_w + count_c < n_warn + n_crit && count_w + count_c < ACTIVE_ALARMS_LIST) {
+        if (active_alerts[count_w+count_c].status == RRDCALC_STATUS_WARNING) {
+            if (count_w)
+                buffer_strcat(warn_alarms, ",");
+            buffer_strcat(warn_alarms, active_alerts[count_w+count_c].name);
+            buffer_strcat(warn_alarms, "=");
+            buffer_snprintf(warn_alarms, 11, "%"PRId64"", (int64_t)active_alerts[count_w+count_c].last_status_change);
+            count_w++;
+        }
+        else if (active_alerts[count_w+count_c].status == RRDCALC_STATUS_CRITICAL) {
+            if (count_c)
+                buffer_strcat(crit_alarms, ",");
+            buffer_strcat(crit_alarms, active_alerts[count_w+count_c].name);
+            buffer_strcat(crit_alarms, "=");
+            buffer_snprintf(crit_alarms, 11, "%"PRId64"", (int64_t)active_alerts[count_w+count_c].last_status_change);
+            count_c++;
+        }
+    }
+
     char *edit_command = ae->source ? health_edit_command_from_source(ae->source) : strdupz("UNKNOWN=0=UNKNOWN");
 
-    snprintfz(command_to_run, ALARM_EXEC_COMMAND_LENGTH, "exec %s '%s' '%s' '%u' '%u' '%u' '%lu' '%s' '%s' '%s' '%s' '%s' '" CALCULATED_NUMBER_FORMAT_ZERO "' '" CALCULATED_NUMBER_FORMAT_ZERO "' '%s' '%u' '%u' '%s' '%s' '%s' '%s' '%s' '%s' '%d' '%d' '%s' '%s' '%s' '%s'",
+    snprintfz(command_to_run, ALARM_EXEC_COMMAND_LENGTH, "exec %s '%s' '%s' '%u' '%u' '%u' '%lu' '%s' '%s' '%s' '%s' '%s' '" NETDATA_DOUBLE_FORMAT_ZERO
+        "' '" NETDATA_DOUBLE_FORMAT_ZERO
+        "' '%s' '%u' '%u' '%s' '%s' '%s' '%s' '%s' '%s' '%d' '%d' '%s' '%s' '%s' '%s' '%s'",
               exec,
               recipient,
               host->registry_hostname,
@@ -381,7 +412,8 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
               buffer_tostring(warn_alarms),
               buffer_tostring(crit_alarms),
               ae->classification?ae->classification:"Unknown",
-              edit_command
+              edit_command,
+              host != localhost ? host->machine_guid:""
     );
 
     ae->flags |= HEALTH_ENTRY_FLAG_EXEC_RUN;
@@ -395,6 +427,7 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
     freez(edit_command);
     buffer_free(warn_alarms);
     buffer_free(crit_alarms);
+    freez(active_alerts);
 
     return; //health_alarm_wait_for_execution
 done:
@@ -416,7 +449,7 @@ static inline void health_alarm_wait_for_execution(ALARM_ENTRY *ae) {
 }
 
 static inline void health_process_notifications(RRDHOST *host, ALARM_ENTRY *ae) {
-    debug(D_HEALTH, "Health alarm '%s.%s' = " CALCULATED_NUMBER_FORMAT_AUTO " - changed status from %s to %s",
+    debug(D_HEALTH, "Health alarm '%s.%s' = " NETDATA_DOUBLE_FORMAT_AUTO " - changed status from %s to %s",
          ae->chart?ae->chart:"NOCHART", ae->name,
          ae->new_value,
          rrdcalc_status2string(ae->old_status),
@@ -451,9 +484,11 @@ static inline void health_alarm_log_process(RRDHOST *host) {
     // remember this for the next iteration
     host->health_last_processed_id = first_waiting;
 
+    bool cleanup_excess_log_entries = host->health_log.count > host->health_log.max;
+
     netdata_rwlock_unlock(&host->health_log.alarm_log_rwlock);
 
-    if(host->health_log.count <= host->health_log.max)
+    if (!cleanup_excess_log_entries)
         return;
 
     // cleanup excess entries in the log
@@ -509,11 +544,6 @@ static inline int rrdcalc_isrunnable(RRDCALC *rc, time_t now, time_t *next_run) 
 
     if(unlikely(rrdset_flag_check(rc->rrdset, RRDSET_FLAG_OBSOLETE))) {
         debug(D_HEALTH, "Health not running alarm '%s.%s'. The chart has been marked as obsolete", rc->chart?rc->chart:"NOCHART", rc->name);
-        return 0;
-    }
-
-    if(unlikely(!rrdset_flag_check(rc->rrdset, RRDSET_FLAG_ENABLED))) {
-        debug(D_HEALTH, "Health not running alarm '%s.%s'. The chart is not enabled", rc->chart?rc->chart:"NOCHART", rc->name);
         return 0;
     }
 
@@ -574,6 +604,8 @@ static inline int check_if_resumed_from_suspension(void) {
 }
 
 static void health_main_cleanup(void *ptr) {
+    worker_unregister();
+
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
@@ -653,6 +685,40 @@ static int update_disabled_silenced(RRDHOST *host, RRDCALC *rc) {
         return 0;
 }
 
+// Create alarms for dimensions that have been added to charts
+// since the previous iteration.
+static void init_pending_foreach_alarms(RRDHOST *host) {
+    RRDSET *st;
+    RRDDIM *rd;
+
+    if (!rrdhost_flag_check(host, RRDHOST_FLAG_PENDING_FOREACH_ALARMS))
+        return;
+
+    rrdhost_wrlock(host);
+
+    rrdset_foreach_write(st, host) {
+        if (!rrdset_flag_check(st, RRDSET_FLAG_PENDING_FOREACH_ALARMS))
+            continue;
+
+        rrdset_rdlock(st);
+
+        rrddim_foreach_read(rd, st) {
+            if (!rrddim_flag_check(rd, RRDDIM_FLAG_PENDING_FOREACH_ALARM))
+                continue;
+
+            rrdcalc_link_to_rrddim(rd, st, host);
+
+            rrddim_flag_clear(rd, RRDDIM_FLAG_PENDING_FOREACH_ALARM);
+        }
+
+        rrdset_flag_clear(st, RRDSET_FLAG_PENDING_FOREACH_ALARMS);
+        rrdset_unlock(st);
+    }
+
+    rrdhost_flag_clear(host, RRDHOST_FLAG_PENDING_FOREACH_ALARMS);
+    rrdhost_unlock(host);
+}
+
 /**
  * Health Main
  *
@@ -662,7 +728,31 @@ static int update_disabled_silenced(RRDHOST *host, RRDCALC *rc) {
  *
  * @return It always returns NULL
  */
+
+#define WORKER_HEALTH_JOB_RRD_LOCK           0
+#define WORKER_HEALTH_JOB_HOST_LOCK          1
+#define WORKER_HEALTH_JOB_DB_QUERY           2
+#define WORKER_HEALTH_JOB_CALC_EVAL          3
+#define WORKER_HEALTH_JOB_WARNING_EVAL       4
+#define WORKER_HEALTH_JOB_CRITICAL_EVAL      5
+#define WORKER_HEALTH_JOB_ALARM_LOG_ENTRY    6
+#define WORKER_HEALTH_JOB_ALARM_LOG_PROCESS  7
+
+#if WORKER_UTILIZATION_MAX_JOB_TYPES < 8
+#error WORKER_UTILIZATION_MAX_JOB_TYPES has to be at least 8
+#endif
+
 void *health_main(void *ptr) {
+    worker_register("HEALTH");
+    worker_register_job_name(WORKER_HEALTH_JOB_RRD_LOCK, "rrd lock");
+    worker_register_job_name(WORKER_HEALTH_JOB_HOST_LOCK, "host lock");
+    worker_register_job_name(WORKER_HEALTH_JOB_DB_QUERY, "db lookup");
+    worker_register_job_name(WORKER_HEALTH_JOB_CALC_EVAL, "calc eval");
+    worker_register_job_name(WORKER_HEALTH_JOB_WARNING_EVAL, "warning eval");
+    worker_register_job_name(WORKER_HEALTH_JOB_CRITICAL_EVAL, "critical eval");
+    worker_register_job_name(WORKER_HEALTH_JOB_ALARM_LOG_ENTRY, "alarm log entry");
+    worker_register_job_name(WORKER_HEALTH_JOB_ALARM_LOG_PROCESS, "alarm log process");
+
     netdata_thread_cleanup_push(health_main_cleanup, ptr);
 
     int min_run_every = (int)config_get_number(CONFIG_SECTION_HEALTH, "run at least every seconds", 10);
@@ -676,7 +766,7 @@ void *health_main(void *ptr) {
     rrdcalc_labels_unlink();
 
     unsigned int loop = 0;
-#if defined(ENABLE_ACLK) && defined(ENABLE_NEW_CLOUD_PROTOCOL)
+#ifdef ENABLE_ACLK
     unsigned int marked_aclk_reload_loop = 0;
 #endif
     while(!netdata_exit) {
@@ -705,11 +795,12 @@ void *health_main(void *ptr) {
             }
         }
 
-#if defined(ENABLE_ACLK) && defined(ENABLE_NEW_CLOUD_PROTOCOL)
+#ifdef ENABLE_ACLK
         if (aclk_alert_reloaded && !marked_aclk_reload_loop)
             marked_aclk_reload_loop = loop;
 #endif
 
+        worker_is_busy(WORKER_HEALTH_JOB_RRD_LOCK);
         rrd_rdlock();
 
         RRDHOST *host;
@@ -734,9 +825,17 @@ void *health_main(void *ptr) {
                 host->health_delay_up_to = 0;
             }
 
+            // wait until cleanup of obsolete charts on children is complete
+            if (host != localhost)
+                if (unlikely(host->trigger_chart_obsoletion_check == 1))
+                    continue;
+
             if(likely(!host->health_log_fp) && (loop == 1 || loop % cleanup_sql_every_loop == 0))
                 sql_health_alarm_log_cleanup(host);
 
+            init_pending_foreach_alarms(host);
+
+            worker_is_busy(WORKER_HEALTH_JOB_HOST_LOCK);
             rrdhost_rdlock(host);
 
             // the first loop is to lookup values from the db
@@ -744,6 +843,33 @@ void *health_main(void *ptr) {
 
                 if (update_disabled_silenced(host, rc))
                     continue;
+
+                // create an alert removed event if the chart is obsolete and
+                // has stopped being collected for 60 seconds
+                if (unlikely(rc->rrdset && rc->status != RRDCALC_STATUS_REMOVED &&
+                             rrdset_flag_check(rc->rrdset, RRDSET_FLAG_OBSOLETE) &&
+                             now > (rc->rrdset->last_collected_time.tv_sec + 60))) {
+                    if (!rrdcalc_isrepeating(rc)) {
+                        worker_is_busy(WORKER_HEALTH_JOB_ALARM_LOG_ENTRY);
+                        time_t now = now_realtime_sec();
+                        ALARM_ENTRY *ae = health_create_alarm_entry(
+                            host, rc->id, rc->next_event_id++, rc->config_hash_id, now, rc->name, rc->rrdset->id, rc->rrdset->context,
+                            rc->rrdset->family, rc->classification, rc->component, rc->type, rc->exec, rc->recipient, now - rc->last_status_change,
+                            rc->value, NAN, rc->status, RRDCALC_STATUS_REMOVED, rc->source, rc->units, rc->info, 0, 0);
+                        if (ae) {
+                            health_alarm_log(host, ae);
+                            rc->old_status = rc->status;
+                            rc->status = RRDCALC_STATUS_REMOVED;
+                            rc->last_status_change = now;
+                            rc->last_updated = now;
+                            rc->value = NAN;
+#ifdef ENABLE_ACLK
+                            if (netdata_cloud_setting && likely(!aclk_alert_reloaded))
+                                sql_queue_alarm_to_aclk(host, ae, 1);
+#endif
+                        }
+                    }
+                }
 
                 if (unlikely(!rrdcalc_isrunnable(rc, now, &next_run))) {
                     if (unlikely(rc->rrdcalc_flags & RRDCALC_FLAG_RUNNABLE))
@@ -759,13 +885,17 @@ void *health_main(void *ptr) {
                 // if there is database lookup, do it
 
                 if (unlikely(RRDCALC_HAS_DB_LOOKUP(rc))) {
+                    worker_is_busy(WORKER_HEALTH_JOB_DB_QUERY);
+
                     /* time_t old_db_timestamp = rc->db_before; */
                     int value_is_null = 0;
 
-                    int ret = rrdset2value_api_v1(rc->rrdset, NULL, &rc->value, rc->dimensions, 1, rc->after,
-                                                  rc->before, rc->group, 0, rc->options, &rc->db_after,
-                                                  &rc->db_before, &value_is_null
-                    );
+                    int ret = rrdset2value_api_v1(rc->rrdset, NULL, &rc->value, rc->dimensions, 1,
+                                                  rc->after, rc->before, rc->group, NULL,
+                                                  0, rc->options,
+                                                  &rc->db_after,&rc->db_before,
+                                                  NULL, NULL, NULL,
+                                                  &value_is_null, NULL, 0, 0);
 
                     if (unlikely(ret != 200)) {
                         // database lookup failed
@@ -805,8 +935,7 @@ void *health_main(void *ptr) {
                     } else
                         rc->rrdcalc_flags &= ~RRDCALC_FLAG_DB_NAN;
 
-                    debug(D_HEALTH, "Health on host '%s', alarm '%s.%s': database lookup gave value "
-                          CALCULATED_NUMBER_FORMAT, host->hostname, rc->chart ? rc->chart : "NOCHART", rc->name,
+                    debug(D_HEALTH, "Health on host '%s', alarm '%s.%s': database lookup gave value " NETDATA_DOUBLE_FORMAT, host->hostname, rc->chart ? rc->chart : "NOCHART", rc->name,
                           rc->value
                     );
                 }
@@ -815,6 +944,8 @@ void *health_main(void *ptr) {
                 // if there is calculation expression, run it
 
                 if (unlikely(rc->calculation)) {
+                    worker_is_busy(WORKER_HEALTH_JOB_CALC_EVAL);
+
                     if (unlikely(!expression_evaluate(rc->calculation))) {
                         // calculation failed
                         rc->value = NAN;
@@ -828,7 +959,7 @@ void *health_main(void *ptr) {
                         rc->rrdcalc_flags &= ~RRDCALC_FLAG_CALC_ERROR;
 
                         debug(D_HEALTH, "Health on host '%s', alarm '%s.%s': expression '%s' gave value "
-                              CALCULATED_NUMBER_FORMAT
+                              NETDATA_DOUBLE_FORMAT
                               ": %s (source: %s)", host->hostname, rc->chart ? rc->chart : "NOCHART", rc->name,
                               rc->calculation->parsed_as, rc->calculation->result,
                               buffer_tostring(rc->calculation->error_msg), rc->source
@@ -863,6 +994,8 @@ void *health_main(void *ptr) {
                     // check the warning expression
 
                     if (likely(rc->warning)) {
+                        worker_is_busy(WORKER_HEALTH_JOB_WARNING_EVAL);
+
                         if (unlikely(!expression_evaluate(rc->warning))) {
                             // calculation failed
                             rc->rrdcalc_flags |= RRDCALC_FLAG_WARN_ERROR;
@@ -875,7 +1008,7 @@ void *health_main(void *ptr) {
                         } else {
                             rc->rrdcalc_flags &= ~RRDCALC_FLAG_WARN_ERROR;
                             debug(D_HEALTH, "Health on host '%s', alarm '%s.%s': warning expression gave value "
-                                  CALCULATED_NUMBER_FORMAT
+                                  NETDATA_DOUBLE_FORMAT
                                   ": %s (source: %s)", host->hostname, rc->chart ? rc->chart : "NOCHART",
                                   rc->name, rc->warning->result, buffer_tostring(rc->warning->error_msg), rc->source
                             );
@@ -887,6 +1020,8 @@ void *health_main(void *ptr) {
                     // check the critical expression
 
                     if (likely(rc->critical)) {
+                        worker_is_busy(WORKER_HEALTH_JOB_CRITICAL_EVAL);
+
                         if (unlikely(!expression_evaluate(rc->critical))) {
                             // calculation failed
                             rc->rrdcalc_flags |= RRDCALC_FLAG_CRIT_ERROR;
@@ -899,7 +1034,7 @@ void *health_main(void *ptr) {
                         } else {
                             rc->rrdcalc_flags &= ~RRDCALC_FLAG_CRIT_ERROR;
                             debug(D_HEALTH, "Health on host '%s', alarm '%s.%s': critical expression gave value "
-                                  CALCULATED_NUMBER_FORMAT
+                                  NETDATA_DOUBLE_FORMAT
                                   ": %s (source: %s)", host->hostname, rc->chart ? rc->chart : "NOCHART",
                                   rc->name, rc->critical->result, buffer_tostring(rc->critical->error_msg),
                                   rc->source
@@ -944,6 +1079,7 @@ void *health_main(void *ptr) {
                     // check if the new status and the old differ
 
                     if (status != rc->status) {
+                        worker_is_busy(WORKER_HEALTH_JOB_ALARM_LOG_ENTRY);
                         int delay = 0;
 
                         // apply trigger hysteresis
@@ -975,19 +1111,19 @@ void *health_main(void *ptr) {
                         rc->delay_last = delay;
                         rc->delay_up_to_timestamp = now + delay;
 
-                        if(likely(!rrdcalc_isrepeating(rc))) {
-                            ALARM_ENTRY *ae = health_create_alarm_entry(
-                                    host, rc->id, rc->next_event_id++, rc->config_hash_id, now, rc->name, rc->rrdset->id,
-                                    rc->rrdset->family, rc->classification, rc->component, rc->type, rc->exec, rc->recipient, now - rc->last_status_change,
-                                    rc->old_value, rc->value, rc->status, status, rc->source, rc->units, rc->info,
-                                    rc->delay_last,
-                                    (
-                                            ((rc->options & RRDCALC_FLAG_NO_CLEAR_NOTIFICATION)? HEALTH_ENTRY_FLAG_NO_CLEAR_NOTIFICATION : 0) |
-                                            ((rc->rrdcalc_flags & RRDCALC_FLAG_SILENCED)? HEALTH_ENTRY_FLAG_SILENCED : 0)
-                                    )
-                            );
-                            health_alarm_log(host, ae);
-                        }
+
+                        ALARM_ENTRY *ae = health_create_alarm_entry(
+                                host, rc->id, rc->next_event_id++, rc->config_hash_id, now, rc->name, rc->rrdset->id, rc->rrdset->context,
+                                rc->rrdset->family, rc->classification, rc->component, rc->type, rc->exec, rc->recipient, now - rc->last_status_change,
+                                rc->old_value, rc->value, rc->status, status, rc->source, rc->units, rc->info,
+                                rc->delay_last,
+                                (
+                                        ((rc->options & RRDCALC_FLAG_NO_CLEAR_NOTIFICATION)? HEALTH_ENTRY_FLAG_NO_CLEAR_NOTIFICATION : 0) |
+                                        ((rc->rrdcalc_flags & RRDCALC_FLAG_SILENCED)? HEALTH_ENTRY_FLAG_SILENCED : 0)
+                                )
+                        );
+                        health_alarm_log(host, ae);
+
                         rc->last_status_change = now;
                         rc->old_status = rc->status;
                         rc->status = status;
@@ -1004,7 +1140,7 @@ void *health_main(void *ptr) {
                 RRDCALC *rc;
                 for(rc = host->alarms; rc ; rc = rc->next) {
                     int repeat_every = 0;
-                    if(unlikely(rrdcalc_isrepeating(rc))) {
+                    if(unlikely(rrdcalc_isrepeating(rc) && rc->delay_up_to_timestamp <= now)) {
                         if(unlikely(rc->status == RRDCALC_STATUS_WARNING)) {
                             rc->rrdcalc_flags &= ~RRDCALC_FLAG_RUN_ONCE;
                             repeat_every = rc->warn_repeat_every;
@@ -1025,9 +1161,11 @@ void *health_main(void *ptr) {
                     }
 
                     if(unlikely(repeat_every > 0 && (rc->last_repeat + repeat_every) <= now)) {
+                        worker_is_busy(WORKER_HEALTH_JOB_ALARM_LOG_ENTRY);
                         rc->last_repeat = now;
+                        if (likely(rc->times_repeat < UINT32_MAX)) rc->times_repeat++;
                         ALARM_ENTRY *ae = health_create_alarm_entry(
-                                host, rc->id, rc->next_event_id++, rc->config_hash_id, now, rc->name, rc->rrdset->id,
+                                host, rc->id, rc->next_event_id++, rc->config_hash_id, now, rc->name, rc->rrdset->id, rc->rrdset->context,
                                 rc->rrdset->family, rc->classification, rc->component, rc->type, rc->exec, rc->recipient, now - rc->last_status_change,
                                 rc->old_value, rc->value, rc->old_status, rc->status, rc->source, rc->units, rc->info,
                                 rc->delay_last,
@@ -1056,6 +1194,7 @@ void *health_main(void *ptr) {
 
             // execute notifications
             // and cleanup
+            worker_is_busy(WORKER_HEALTH_JOB_ALARM_LOG_PROCESS);
             health_alarm_log_process(host);
 
             if (unlikely(netdata_exit)) {
@@ -1075,7 +1214,7 @@ void *health_main(void *ptr) {
             health_alarm_wait_for_execution(ae);
         }
 
-#if defined(ENABLE_ACLK) && defined(ENABLE_NEW_CLOUD_PROTOCOL)
+#ifdef ENABLE_ACLK
         if (netdata_cloud_setting && unlikely(aclk_alert_reloaded) && loop > (marked_aclk_reload_loop + 2)) {
                 rrdhost_foreach_read(host) {
                     if (unlikely(!host->health_enabled))
@@ -1094,6 +1233,7 @@ void *health_main(void *ptr) {
 
         now = now_realtime_sec();
         if(now < next_run) {
+            worker_is_idle();
             debug(D_HEALTH, "Health monitoring iteration no %u done. Next iteration in %d secs", loop, (int) (next_run - now));
             sleep_usec(USEC_PER_SEC * (usec_t) (next_run - now));
             now = now_realtime_sec();

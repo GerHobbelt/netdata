@@ -7,7 +7,7 @@ struct analytics_data analytics_data;
 extern void analytics_exporting_connectors (BUFFER *b);
 extern void analytics_exporting_connectors_ssl (BUFFER *b);
 extern void analytics_build_info (BUFFER *b);
-extern int aclk_connected, aclk_use_new_cloud_arch;
+extern int aclk_connected;
 
 struct collector {
     char *plugin;
@@ -249,8 +249,9 @@ void analytics_exporters(void)
     buffer_free(bi);
 }
 
-int collector_counter_callb(void *entry, void *data)
-{
+int collector_counter_callb(const char *name, void *entry, void *data) {
+    (void)name;
+
     struct array_printer *ap = (struct array_printer *)data;
     struct collector *col = (struct collector *)entry;
 
@@ -296,7 +297,7 @@ void analytics_collectors(void)
     ap.c = 0;
     ap.both = bt;
 
-    dictionary_get_all(dict, collector_counter_callb, &ap);
+    dictionary_walkthrough_read(dict, collector_counter_callb, &ap);
     dictionary_destroy(dict);
 
     analytics_set_data(&analytics_data.netdata_collectors, (char *)buffer_tostring(ap.both));
@@ -362,21 +363,15 @@ void analytics_alarms_notifications(void)
 
 void analytics_get_install_type(void)
 {
-    struct install_type_info t = get_install_type();
-
-    if (t.install_type == NULL) {
+    if (localhost->system_info->install_type == NULL) {
         analytics_set_data_str(&analytics_data.netdata_install_type, "unknown");
     } else {
-        analytics_set_data_str(&analytics_data.netdata_install_type, t.install_type);
+        analytics_set_data_str(&analytics_data.netdata_install_type, localhost->system_info->install_type);
     }
 
-    if (t.prebuilt_distro != NULL) {
-        analytics_set_data_str(&analytics_data.netdata_prebuilt_distro, t.prebuilt_distro);
+    if (localhost->system_info->prebuilt_dist != NULL) {
+        analytics_set_data_str(&analytics_data.netdata_prebuilt_distro, localhost->system_info->prebuilt_dist);
     }
-
-    freez(t.prebuilt_arch);
-    freez(t.prebuilt_distro);
-    freez(t.install_type);
 }
 
 /*
@@ -387,7 +382,7 @@ void analytics_https(void)
     BUFFER *b = buffer_create(30);
 #ifdef ENABLE_HTTPS
     analytics_exporting_connectors_ssl(b);
-    buffer_strcat(b, netdata_client_ctx && localhost->ssl.flags == NETDATA_SSL_HANDSHAKE_COMPLETE && localhost->rrdpush_sender_connected == 1 ? "streaming|" : "|");
+    buffer_strcat(b, netdata_client_ctx && localhost->ssl.flags == NETDATA_SSL_HANDSHAKE_COMPLETE && __atomic_load_n(&localhost->rrdpush_sender_connected, __ATOMIC_SEQ_CST) ? "streaming|" : "|");
     buffer_strcat(b, netdata_srv_ctx ? "web" : "");
 #else
     buffer_strcat(b, "||");
@@ -422,12 +417,16 @@ void analytics_metrics(void)
     rrdset_foreach_read(st, localhost)
     {
         rrdset_rdlock(st);
-        rrddim_foreach_read(rd, st)
-        {
-            if (rrddim_flag_check(rd, RRDDIM_FLAG_HIDDEN) || rrddim_flag_check(rd, RRDDIM_FLAG_OBSOLETE))
-                continue;
-            dimensions++;
+
+        if (rrdset_is_available_for_viewers(st)) {
+            rrddim_foreach_read(rd, st)
+            {
+                if (rrddim_flag_check(rd, RRDDIM_FLAG_HIDDEN) || rrddim_flag_check(rd, RRDDIM_FLAG_OBSOLETE))
+                    continue;
+                dimensions++;
+            }
         }
+
         rrdset_unlock(st);
     }
     {
@@ -500,12 +499,7 @@ void analytics_aclk(void)
 #ifdef ENABLE_ACLK
     if (aclk_connected) {
         analytics_set_data(&analytics_data.netdata_host_aclk_available, "true");
-#ifdef ENABLE_NEW_CLOUD_PROTOCOL
-        if (aclk_use_new_cloud_arch)
-            analytics_set_data_str(&analytics_data.netdata_host_aclk_protocol, "New");
-        else
-#endif
-            analytics_set_data_str(&analytics_data.netdata_host_aclk_protocol, "Legacy");
+        analytics_set_data_str(&analytics_data.netdata_host_aclk_protocol, "New");
     }
     else
 #endif
@@ -547,7 +541,7 @@ void analytics_gather_mutable_meta_data(void)
     analytics_set_data(
         &analytics_data.netdata_config_is_parent, (localhost->next || configured_as_parent()) ? "true" : "false");
 
-    char *claim_id = is_agent_claimed();
+    char *claim_id = get_agent_claimid();
     analytics_set_data(&analytics_data.netdata_host_agent_claimed, claim_id ? "true" : "false");
     freez(claim_id);
 
@@ -703,7 +697,7 @@ void get_system_timezone(void)
     // http://stackoverflow.com/questions/4554271/how-to-avoid-excessive-stat-etc-localtime-calls-in-strftime-on-linux
     const char *tz = getenv("TZ");
     if (!tz || !*tz)
-        setenv("TZ", config_get(CONFIG_SECTION_GLOBAL, "TZ environment variable", ":/etc/localtime"), 0);
+        setenv("TZ", config_get(CONFIG_SECTION_ENV_VARS, "TZ", ":/etc/localtime"), 0);
 
     char buffer[FILENAME_MAX + 1] = "";
     const char *timezone = NULL;
@@ -848,6 +842,20 @@ void set_global_environment()
     setenv("HOME", verify_required_directory(netdata_configured_home_dir), 1);
     setenv("NETDATA_HOST_PREFIX", netdata_configured_host_prefix, 1);
 
+    {
+        BUFFER *user_plugins_dirs = buffer_create(FILENAME_MAX);
+
+        for (size_t i = 1; i < PLUGINSD_MAX_DIRECTORIES && plugin_directories[i]; i++) {
+            if (i > 1)
+                buffer_strcat(user_plugins_dirs, " ");
+            buffer_strcat(user_plugins_dirs, plugin_directories[i]);
+        }
+
+        setenv("NETDATA_USER_PLUGINS_DIRS", buffer_tostring(user_plugins_dirs), 1);
+
+        buffer_free(user_plugins_dirs);
+    }
+
     analytics_data.data_length = 0;
     analytics_set_data(&analytics_data.netdata_config_stream_enabled, "null");
     analytics_set_data(&analytics_data.netdata_config_memory_mode, "null");
@@ -910,13 +918,13 @@ void set_global_environment()
     if (!p)
         p = "/bin:/usr/bin";
     snprintfz(path, 1024, "%s:%s", p, "/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin");
-    setenv("PATH", config_get(CONFIG_SECTION_PLUGINS, "PATH environment variable", path), 1);
+    setenv("PATH", config_get(CONFIG_SECTION_ENV_VARS, "PATH", path), 1);
 
     // python options
     p = getenv("PYTHONPATH");
     if (!p)
         p = "";
-    setenv("PYTHONPATH", config_get(CONFIG_SECTION_PLUGINS, "PYTHONPATH environment variable", p), 1);
+    setenv("PYTHONPATH", config_get(CONFIG_SECTION_ENV_VARS, "PYTHONPATH", p), 1);
 
     // disable buffering for python plugins
     setenv("PYTHONUNBUFFERED", "1", 1);

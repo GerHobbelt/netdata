@@ -63,8 +63,8 @@ struct rrdcalc {
     int update_every;               // update frequency for the alarm
 
     // the red and green threshold of this alarm (to be set to the chart)
-    calculated_number green;
-    calculated_number red;
+    NETDATA_DOUBLE green;
+    NETDATA_DOUBLE red;
 
     // ------------------------------------------------------------------------
     // database lookup settings
@@ -103,8 +103,8 @@ struct rrdcalc {
 
     // ------------------------------------------------------------------------
     // Labels settings
-    char *labels;                   // the label read from an alarm file
-    SIMPLE_PATTERN *splabels;       // the simple pattern of labels
+    char *host_labels;                   // the label read from an alarm file
+    SIMPLE_PATTERN *host_labels_pattern; // the simple pattern of labels
 
     // ------------------------------------------------------------------------
     // runtime information
@@ -112,8 +112,8 @@ struct rrdcalc {
     RRDCALC_STATUS old_status; // the old status of the alarm
     RRDCALC_STATUS status;          // the current status of the alarm
 
-    calculated_number value;        // the current value of the alarm
-    calculated_number old_value;    // the previous value of the alarm
+    NETDATA_DOUBLE value;        // the current value of the alarm
+    NETDATA_DOUBLE old_value;    // the previous value of the alarm
 
     uint32_t rrdcalc_flags;         // check RRDCALC_FLAG_*
 
@@ -121,6 +121,7 @@ struct rrdcalc {
     time_t next_update;             // the next update timestamp of the alarm
     time_t last_status_change;      // the timestamp of the last time this alarm changed status
     time_t last_repeat; // the last time the alarm got repeated
+    uint32_t times_repeat;          // number of times the alarm got repeated
 
     time_t db_after;                // the first timestamp evaluated by the db lookup
     time_t db_before;               // the last timestamp evaluated by the db lookup

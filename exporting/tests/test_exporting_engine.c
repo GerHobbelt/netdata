@@ -14,11 +14,6 @@ char *netdata_configured_hostname = "test_global_host";
 
 char log_line[MAX_LOG_LINE + 1];
 
-BACKEND_OPTIONS global_backend_options = 0;
-const char *global_backend_source = "average";
-const char *global_backend_prefix = "netdata";
-const char *global_backend_send_charts_matching = "*";
-
 void init_connectors_in_tests(struct engine *engine)
 {
     expect_function_call(__wrap_now_realtime_sec);
@@ -235,7 +230,7 @@ static void test_rrdhost_is_exportable(void **state)
     assert_string_equal(log_line, "enabled exporting of host 'localhost' for instance 'instance_name'");
 
     assert_ptr_not_equal(localhost->exporting_flags, NULL);
-    assert_int_equal(localhost->exporting_flags[0], RRDHOST_FLAG_BACKEND_SEND);
+    assert_int_equal(localhost->exporting_flags[0], RRDHOST_FLAG_EXPORTING_SEND);
 }
 
 static void test_false_rrdhost_is_exportable(void **state)
@@ -255,7 +250,7 @@ static void test_false_rrdhost_is_exportable(void **state)
     assert_string_equal(log_line, "disabled exporting of host 'localhost' for instance 'instance_name'");
 
     assert_ptr_not_equal(localhost->exporting_flags, NULL);
-    assert_int_equal(localhost->exporting_flags[0], RRDHOST_FLAG_BACKEND_DONT_SEND);
+    assert_int_equal(localhost->exporting_flags[0], RRDHOST_FLAG_EXPORTING_DONT_SEND);
 }
 
 static void test_rrdset_is_exportable(void **state)
@@ -312,19 +307,17 @@ static void test_exporting_calculate_value_from_stored_data(void **state)
     expect_function_call(__mock_rrddim_query_is_finished);
     will_return(__mock_rrddim_query_is_finished, 0);
     expect_function_call(__mock_rrddim_query_next_metric);
-    will_return(__mock_rrddim_query_next_metric, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     expect_function_call(__mock_rrddim_query_is_finished);
     will_return(__mock_rrddim_query_is_finished, 0);
     expect_function_call(__mock_rrddim_query_next_metric);
-    will_return(__mock_rrddim_query_next_metric, pack_storage_number(45, SN_DEFAULT_FLAGS));
 
     expect_function_call(__mock_rrddim_query_is_finished);
     will_return(__mock_rrddim_query_is_finished, 1);
 
     expect_function_call(__mock_rrddim_query_finalize);
 
-    assert_int_equal(__real_exporting_calculate_value_from_stored_data(instance, rd, &timestamp), 36);
+    assert_float_equal(__real_exporting_calculate_value_from_stored_data(instance, rd, &timestamp), 36, 0.1);
 }
 
 static void test_prepare_buffers(void **state)
@@ -386,7 +379,7 @@ static void test_prepare_buffers(void **state)
     expect_value(__mock_end_batch_formatting, instance, instance);
     will_return(__mock_end_batch_formatting, 0);
 
-    assert_int_equal(__real_prepare_buffers(engine), 0);
+    __real_prepare_buffers(engine);
 
     assert_int_equal(instance->stats.buffered_metrics, 1);
 
@@ -398,7 +391,7 @@ static void test_prepare_buffers(void **state)
     instance->end_chart_formatting = NULL;
     instance->end_host_formatting = NULL;
     instance->end_batch_formatting = NULL;
-    assert_int_equal(__real_prepare_buffers(engine), 0);
+    __real_prepare_buffers(engine);
 
     assert_int_equal(instance->scheduled, 0);
     assert_int_equal(instance->after, 2);
@@ -710,7 +703,7 @@ static void test_format_host_labels_json_plaintext(void **state)
     instance->config.options |= EXPORTING_OPTION_SEND_AUTOMATIC_LABELS;
 
     assert_int_equal(format_host_labels_json_plaintext(instance, localhost), 0);
-    assert_string_equal(buffer_tostring(instance->labels), "\"labels\":{\"key1\":\"value1\",\"key2\":\"value2\"},");
+    assert_string_equal(buffer_tostring(instance->labels_buffer), "\"labels\":{\"key1\":\"value1\",\"key2\":\"value2\"},");
 }
 
 static void test_format_host_labels_graphite_plaintext(void **state)
@@ -722,7 +715,7 @@ static void test_format_host_labels_graphite_plaintext(void **state)
     instance->config.options |= EXPORTING_OPTION_SEND_AUTOMATIC_LABELS;
 
     assert_int_equal(format_host_labels_graphite_plaintext(instance, localhost), 0);
-    assert_string_equal(buffer_tostring(instance->labels), ";key1=value1;key2=value2");
+    assert_string_equal(buffer_tostring(instance->labels_buffer), ";key1=value1;key2=value2");
 }
 
 static void test_format_host_labels_opentsdb_telnet(void **state)
@@ -734,7 +727,7 @@ static void test_format_host_labels_opentsdb_telnet(void **state)
     instance->config.options |= EXPORTING_OPTION_SEND_AUTOMATIC_LABELS;
 
     assert_int_equal(format_host_labels_opentsdb_telnet(instance, localhost), 0);
-    assert_string_equal(buffer_tostring(instance->labels), " key1=value1 key2=value2");
+    assert_string_equal(buffer_tostring(instance->labels_buffer), " key1=value1 key2=value2");
 }
 
 static void test_format_host_labels_opentsdb_http(void **state)
@@ -746,7 +739,7 @@ static void test_format_host_labels_opentsdb_http(void **state)
     instance->config.options |= EXPORTING_OPTION_SEND_AUTOMATIC_LABELS;
 
     assert_int_equal(format_host_labels_opentsdb_http(instance, localhost), 0);
-    assert_string_equal(buffer_tostring(instance->labels), ",\"key1\":\"value1\",\"key2\":\"value2\"");
+    assert_string_equal(buffer_tostring(instance->labels_buffer), ",\"key1\":\"value1\",\"key2\":\"value2\"");
 }
 
 static void test_flush_host_labels(void **state)
@@ -754,12 +747,12 @@ static void test_flush_host_labels(void **state)
     struct engine *engine = *state;
     struct instance *instance = engine->instance_root;
 
-    instance->labels = buffer_create(12);
-    buffer_strcat(instance->labels, "check string");
-    assert_int_equal(buffer_strlen(instance->labels), 12);
+    instance->labels_buffer = buffer_create(12);
+    buffer_strcat(instance->labels_buffer, "check string");
+    assert_int_equal(buffer_strlen(instance->labels_buffer), 12);
 
     assert_int_equal(flush_host_labels(instance, localhost), 0);
-    assert_int_equal(buffer_strlen(instance->labels), 0);
+    assert_int_equal(buffer_strlen(instance->labels_buffer), 0);
 }
 
 static void test_create_main_rusage_chart(void **state)
@@ -993,21 +986,21 @@ static void test_can_send_rrdset(void **state)
 {
     (void)*state;
 
-    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 1);
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root, NULL), 1);
 
     rrdset_flag_set(localhost->rrdset_root, RRDSET_FLAG_EXPORTING_IGNORE);
-    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 0);
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root, NULL), 0);
     rrdset_flag_clear(localhost->rrdset_root, RRDSET_FLAG_EXPORTING_IGNORE);
 
     // TODO: test with a denying simple pattern
 
     rrdset_flag_set(localhost->rrdset_root, RRDSET_FLAG_OBSOLETE);
-    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 0);
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root, NULL), 0);
     rrdset_flag_clear(localhost->rrdset_root, RRDSET_FLAG_OBSOLETE);
 
     localhost->rrdset_root->rrd_memory_mode = RRD_MEMORY_MODE_NONE;
     prometheus_exporter_instance->config.options |= EXPORTING_SOURCE_DATA_AVERAGE;
-    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 0);
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root, NULL), 0);
 }
 
 static void test_prometheus_name_copy(void **state)
@@ -1053,7 +1046,7 @@ static void test_format_host_labels_prometheus(void **state)
     instance->config.options |= EXPORTING_OPTION_SEND_AUTOMATIC_LABELS;
 
     format_host_labels_prometheus(instance, localhost);
-    assert_string_equal(buffer_tostring(instance->labels), "key1=\"value1\",key2=\"value2\"");
+    assert_string_equal(buffer_tostring(instance->labels_buffer), "key1=\"value1\",key2=\"value2\"");
 }
 
 static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
@@ -1072,13 +1065,11 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
     will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
-    rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(localhost, buffer, "test_server", "test_prefix", 0, 0);
+    rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(localhost, NULL, buffer, "test_server", "test_prefix", 0, 0);
 
     assert_string_equal(
         buffer_tostring(buffer),
-        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
-        "netdata_host_tags_info{key1=\"value1\",key2=\"value2\"} 1\n"
-        "netdata_host_tags{key1=\"value1\",key2=\"value2\"} 1\n"
+        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\",key1=\"value1\",key2=\"value2\"} 1\n"
         "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\"} 690565856.0000000\n");
 
     buffer_flush(buffer);
@@ -1090,13 +1081,11 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
     will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(
-        localhost, buffer, "test_server", "test_prefix", 0, PROMETHEUS_OUTPUT_NAMES | PROMETHEUS_OUTPUT_TYPES);
+        localhost, NULL, buffer, "test_server", "test_prefix", 0, PROMETHEUS_OUTPUT_NAMES | PROMETHEUS_OUTPUT_TYPES);
 
     assert_string_equal(
         buffer_tostring(buffer),
-        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
-        "netdata_host_tags_info{key1=\"value1\",key2=\"value2\"} 1\n"
-        "netdata_host_tags{key1=\"value1\",key2=\"value2\"} 1\n"
+        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\",key1=\"value1\",key2=\"value2\"} 1\n"
         "# TYPE test_prefix_test_context gauge\n"
         "test_prefix_test_context{chart=\"chart_name\",family=\"test_family\",dimension=\"dimension_name\"} 690565856.0000000\n");
 
@@ -1108,13 +1097,11 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
     will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
-    rrd_stats_api_v1_charts_allmetrics_prometheus_all_hosts(localhost, buffer, "test_server", "test_prefix", 0, 0);
+    rrd_stats_api_v1_charts_allmetrics_prometheus_all_hosts(localhost, NULL, buffer, "test_server", "test_prefix", 0, 0);
 
     assert_string_equal(
         buffer_tostring(buffer),
-        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
-        "netdata_host_tags_info{instance=\"test_hostname\",key1=\"value1\",key2=\"value2\"} 1\n"
-        "netdata_host_tags{instance=\"test_hostname\",key1=\"value1\",key2=\"value2\"} 1\n"
+        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\",key1=\"value1\",key2=\"value2\"} 1\n"
         "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\",instance=\"test_hostname\"} 690565856.0000000\n");
 
     free(localhost->rrdset_root->context);
@@ -1226,6 +1213,13 @@ static void test_format_host_prometheus_remote_write(void **state)
     expect_function_call(__wrap_add_host_info);
     expect_value(__wrap_add_host_info, write_request_p, 0xff);
     expect_string(__wrap_add_host_info, name, "netdata_info");
+    expect_string(__wrap_add_host_info, instance, "test-host");
+    expect_string(__wrap_add_host_info, application, "test_program");
+    expect_string(__wrap_add_host_info, version, "test_version");
+    expect_in_range(
+        __wrap_add_host_info, timestamp, now_realtime_usec() / USEC_PER_MS - 1000, now_realtime_usec() / USEC_PER_MS);
+    
+    expect_string(__wrap_add_host_info, name, "netdata_host_tags_info");
     expect_string(__wrap_add_host_info, instance, "test-host");
     expect_string(__wrap_add_host_info, application, "test_program");
     expect_string(__wrap_add_host_info, version, "test_version");

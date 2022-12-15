@@ -74,28 +74,15 @@ inline void health_label_log_save(RRDHOST *host) {
 
     if(unlikely(host->health_log_fp)) {
         BUFFER *wb = buffer_create(1024);
-        rrdhost_check_rdlock(host);
-        netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-        struct label *l=localhost->labels.head;
-        while (l != NULL) {
-            buffer_sprintf(wb,"%s=%s\t ", l->key, l->value);
-            l = l->next;
-        }
-        netdata_rwlock_unlock(&host->labels.labels_rwlock);
 
-        char *write = (char *) buffer_tostring(wb) ;
+        rrdlabels_to_buffer(localhost->host_labels, wb, "", "=", "", "\t ", NULL, NULL, NULL, NULL);
+        char *write = (char *) buffer_tostring(wb);
 
-        write[wb->len-2] = '\n';
-        write[wb->len-1] = '\0';
-
-        if (unlikely(fprintf(host->health_log_fp, "L\t%s"
-                , write
-        ) < 0))
+        if (unlikely(fprintf(host->health_log_fp, "L\t%s", write) < 0))
             error("HEALTH [%s]: failed to save alarm log entry to '%s'. Health data may be lost in case of abnormal restart.",
                   host->hostname, host->health_log_filename);
-        else {
+        else
             host->health_log_entries_written++;
-        }
 
         buffer_free(wb);
     }
@@ -111,7 +98,7 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
                         "\t%08x\t%08x\t%08x"
                         "\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s"
                         "\t%d\t%d\t%d\t%d"
-                        "\t" CALCULATED_NUMBER_FORMAT_AUTO "\t" CALCULATED_NUMBER_FORMAT_AUTO
+                        "\t" NETDATA_DOUBLE_FORMAT_AUTO "\t" NETDATA_DOUBLE_FORMAT_AUTO
                         "\t%016"PRIx64""
                         "\t%s\t%s\t%s"
                         "\n"
@@ -162,7 +149,7 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
 
 #ifdef ENABLE_ACLK
     if (netdata_cloud_setting) {
-        sql_queue_alarm_to_aclk(host, ae);
+        sql_queue_alarm_to_aclk(host, ae, 0);
     }
 #endif
 }
@@ -463,6 +450,7 @@ inline ALARM_ENTRY* health_create_alarm_entry(
         time_t when,
         const char *name,
         const char *chart,
+        const char *chart_context,
         const char *family,
         const char *class,
         const char *component,
@@ -470,8 +458,8 @@ inline ALARM_ENTRY* health_create_alarm_entry(
         const char *exec,
         const char *recipient,
         time_t duration,
-        calculated_number old_value,
-        calculated_number new_value,
+        NETDATA_DOUBLE old_value,
+        NETDATA_DOUBLE new_value,
         RRDCALC_STATUS old_status,
         RRDCALC_STATUS new_status,
         const char *source,
@@ -490,6 +478,9 @@ inline ALARM_ENTRY* health_create_alarm_entry(
         ae->chart = strdupz(chart);
         ae->hash_chart = simple_hash(ae->chart);
     }
+
+    if(chart_context)
+        ae->chart_context = strdupz(chart_context);
 
     uuid_copy(ae->config_hash_id, *((uuid_t *) config_hash_id));
 
@@ -560,10 +551,6 @@ inline void health_alarm_log(
 ) {
     debug(D_HEALTH, "Health adding alarm log entry with id: %u", ae->unique_id);
 
-    if(unlikely(alarm_entry_isrepeating(host, ae))) {
-        error("Repeating alarms cannot be added to host's alarm log entries. It seems somewhere in the logic, API is being misused. Alarm id: %u", ae->alarm_id);
-        return;
-    }
     // link it
     netdata_rwlock_wrlock(&host->health_log.alarm_log_rwlock);
     ae->next = host->health_log.alarms;
@@ -600,6 +587,7 @@ inline void health_alarm_log(
 inline void health_alarm_log_free_one_nochecks_nounlink(ALARM_ENTRY *ae) {
     freez(ae->name);
     freez(ae->chart);
+    freez(ae->chart_context);
     freez(ae->family);
     freez(ae->classification);
     freez(ae->component);

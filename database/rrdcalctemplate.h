@@ -42,8 +42,8 @@ struct rrdcalctemplate {
     int update_every;               // update frequency for the alarm
 
     // the red and green threshold of this alarm (to be set to the chart)
-    calculated_number green;
-    calculated_number red;
+    NETDATA_DOUBLE green;
+    NETDATA_DOUBLE red;
 
     // ------------------------------------------------------------------------
     // database lookup settings
@@ -74,8 +74,8 @@ struct rrdcalctemplate {
 
     // ------------------------------------------------------------------------
     // Labels settings
-    char *labels;                   // the label read from an alarm file
-    SIMPLE_PATTERN *splabels;       // the simple pattern of labels
+    char *host_labels;                   // the label read from an alarm file
+    SIMPLE_PATTERN *host_labels_pattern; // the simple pattern of labels
 
     // ------------------------------------------------------------------------
     // expressions related to the alarm

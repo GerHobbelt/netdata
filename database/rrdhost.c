@@ -3,12 +3,44 @@
 #define NETDATA_RRD_INTERNALS
 #include "rrd.h"
 
+int storage_tiers = 1;
+int storage_tiers_grouping_iterations[RRD_STORAGE_TIERS] = { 1, 60, 60, 60, 60 };
+RRD_BACKFILL storage_tiers_backfill[RRD_STORAGE_TIERS] = { RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW };
+
+#if RRD_STORAGE_TIERS != 5
+#error RRD_STORAGE_TIERS is not 5 - you need to update the grouping iterations per tier
+#endif
+
+int get_tier_grouping(int tier) {
+    if(unlikely(tier >= storage_tiers)) tier = storage_tiers - 1;
+    if(unlikely(tier < 0)) tier = 0;
+
+    int grouping = 1;
+    // first tier is always 1 iteration of whatever update every the chart has
+    for(int i = 1; i <= tier ;i++)
+        grouping *= storage_tiers_grouping_iterations[i];
+
+    return grouping;
+}
+
 RRDHOST *localhost = NULL;
 size_t rrd_hosts_available = 0;
 netdata_rwlock_t rrd_rwlock = NETDATA_RWLOCK_INITIALIZER;
 
 time_t rrdset_free_obsolete_time = 3600;
 time_t rrdhost_free_orphan_time = 3600;
+
+bool is_storage_engine_shared(STORAGE_INSTANCE *engine) {
+#ifdef ENABLE_DBENGINE
+    for(int tier = 0; tier < storage_tiers ;tier++) {
+        if (engine == (STORAGE_INSTANCE *)multidb_ctx[tier])
+            return true;
+    }
+#endif
+
+    return false;
+}
+
 
 // ----------------------------------------------------------------------------
 // RRDHOST index
@@ -155,7 +187,8 @@ RRDHOST *rrdhost_create(const char *hostname,
                         char *rrdpush_api_key,
                         char *rrdpush_send_charts_matching,
                         struct rrdhost_system_info *system_info,
-                        int is_localhost
+                        int is_localhost,
+                        bool archived
 ) {
     debug(D_RRDHOST, "Host '%s': adding with guid '%s'", hostname, guid);
 
@@ -175,12 +208,13 @@ RRDHOST *rrdhost_create(const char *hostname,
     host->rrd_history_entries = align_entries_to_pagesize(memory_mode, entries);
     host->health_enabled      = ((memory_mode == RRD_MEMORY_MODE_NONE)) ? 0 : health_enabled;
 
-    host->sender = mallocz(sizeof(*host->sender));
-    sender_init(host->sender, host);
+    sender_init(host);
     netdata_mutex_init(&host->receiver_lock);
 
     host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
     host->rrdpush_send_destination = (host->rrdpush_send_enabled)?strdupz(rrdpush_destination):NULL;
+    if (host->rrdpush_send_destination)
+        host->destinations = destinations_init(host->rrdpush_send_destination);
     host->rrdpush_send_api_key     = (host->rrdpush_send_enabled)?strdupz(rrdpush_api_key):NULL;
     host->rrdpush_send_charts_matching = simple_pattern_create(rrdpush_send_charts_matching, NULL, SIMPLE_PATTERN_EXACT);
 
@@ -197,7 +231,7 @@ RRDHOST *rrdhost_create(const char *hostname,
 #endif
 
     netdata_rwlock_init(&host->rrdhost_rwlock);
-    netdata_rwlock_init(&host->labels.labels_rwlock);
+    host->host_labels = rrdlabels_create();
 
     netdata_mutex_init(&host->aclk_state_lock);
 
@@ -208,10 +242,10 @@ RRDHOST *rrdhost_create(const char *hostname,
     avl_init_lock(&(host->rrdfamily_root_index),   rrdfamily_compare);
     avl_init_lock(&(host->rrdvar_root_index),   rrdvar_compare);
 
-    if(config_get_boolean(CONFIG_SECTION_GLOBAL, "delete obsolete charts files", 1))
+    if(config_get_boolean(CONFIG_SECTION_DB, "delete obsolete charts files", 1))
         rrdhost_flag_set(host, RRDHOST_FLAG_DELETE_OBSOLETE_CHARTS);
 
-    if(config_get_boolean(CONFIG_SECTION_GLOBAL, "delete orphan hosts files", 1) && !is_localhost)
+    if(config_get_boolean(CONFIG_SECTION_DB, "delete orphan hosts files", 1) && !is_localhost)
         rrdhost_flag_set(host, RRDHOST_FLAG_DELETE_ORPHAN_HOST);
 
     host->health_default_warn_repeat_every = config_get_duration(CONFIG_SECTION_HEALTH, "default repeat warning", "never");
@@ -301,18 +335,21 @@ RRDHOST *rrdhost_create(const char *hostname,
 
     if(t != host) {
         error("Host '%s': cannot add host with machine guid '%s' to index. It already exists as host '%s' with machine guid '%s'.", host->hostname, host->machine_guid, t->hostname, t->machine_guid);
-        rrdhost_free(host);
+        rrdhost_free(host, 1);
         return NULL;
     }
 
     if (likely(!uuid_parse(host->machine_guid, host->host_uuid))) {
-        int rc = sql_store_host(&host->host_uuid, hostname, registry_hostname, update_every, os, timezone, tags);
-        if (unlikely(rc))
-            error_report("Failed to store machine GUID to the database");
+        int rc;
+        if (!archived) {
+            rc = sql_store_host_info(host);
+            if (unlikely(rc))
+                error_report("Failed to store machine GUID to the database");
+        }
         sql_load_node_id(host);
         if (host->health_enabled) {
             if (!file_is_migrated(host->health_log_filename)) {
-                int rc = sql_create_health_log_table(host);
+                rc = sql_create_health_log_table(host);
                 if (unlikely(rc)) {
                     error_report("Failed to create health log table in the database");
                     health_alarm_log_load(host);
@@ -341,16 +378,33 @@ RRDHOST *rrdhost_create(const char *hostname,
         if (ret != 0 && errno != EEXIST)
             error("Host '%s': cannot create directory '%s'", host->hostname, dbenginepath);
         else ret = 0; // succeed
-        if (is_legacy) // initialize legacy dbengine instance as needed
-            ret = rrdeng_init(host, &host->rrdeng_ctx, dbenginepath, default_rrdeng_page_cache_mb,
-                              default_rrdeng_disk_quota_mb); // may fail here for legacy dbengine initialization
-        else
-            host->rrdeng_ctx = &multidb_ctx;
+        if (is_legacy) {
+            // initialize legacy dbengine instance as needed
+
+            ret = rrdeng_init(
+                host,
+                (struct rrdengine_instance **)&host->storage_instance[0],
+                dbenginepath,
+                default_rrdeng_page_cache_mb,
+                default_rrdeng_disk_quota_mb,
+                0); // may fail here for legacy dbengine initialization
+
+            if(ret == 0) {
+                // assign the rest of the shared storage instances to it
+                // to allow them collect its metrics too
+                for(int tier = 1; tier < storage_tiers ; tier++)
+                    host->storage_instance[tier] = (STORAGE_INSTANCE *)multidb_ctx[tier];
+            }
+        }
+        else {
+            for(int tier = 0; tier < storage_tiers ; tier++)
+                host->storage_instance[tier] = (STORAGE_INSTANCE *)multidb_ctx[tier];
+        }
         if (ret) { // check legacy or multihost initialization success
             error(
                 "Host '%s': cannot initialize host with machine guid '%s'. Failed to initialize DB engine at '%s'.",
                 host->hostname, host->machine_guid, host->cache_dir);
-            rrdhost_free(host);
+            rrdhost_free(host, 1);
             host = NULL;
             //rrd_hosts_available++; //TODO: maybe we want this?
 
@@ -363,7 +417,9 @@ RRDHOST *rrdhost_create(const char *hostname,
     }
     else {
 #ifdef ENABLE_DBENGINE
-        host->rrdeng_ctx = &multidb_ctx;
+        // the first tier is reserved for the non-dbengine modes
+        for(int tier = 1; tier < storage_tiers ; tier++)
+            host->storage_instance[tier] = (STORAGE_INSTANCE *)multidb_ctx[tier];
 #endif
     }
 
@@ -385,15 +441,12 @@ RRDHOST *rrdhost_create(const char *hostname,
     // ------------------------------------------------------------------------
     // init new ML host and update system_info to let upstreams know
     // about ML functionality
+    //
 
-    ml_new_host(host);
     if (is_localhost && host->system_info) {
-#ifndef ENABLE_ML
-        host->system_info->ml_capable = 0;
-#else
-        host->system_info->ml_capable = 1;
-#endif
-        host->system_info->ml_enabled = host->ml_host != NULL;
+        host->system_info->ml_capable = ml_capable();
+        host->system_info->ml_enabled = ml_enabled(host);
+        host->system_info->mc_version = enable_metric_correlations ? metric_correlations_version : 0;
     }
 
     info("Host '%s' (at registry as '%s') with guid '%s' initialized"
@@ -434,9 +487,15 @@ RRDHOST *rrdhost_create(const char *hostname,
          , host->health_default_exec
          , host->health_default_recipient
     );
+    sql_store_host_system_info(&host->host_uuid, system_info);
 
     rrd_hosts_available++;
 
+    rrdhost_load_rrdcontext_data(host);
+    if (!archived)
+        ml_new_host(host);
+    else
+        rrdhost_flag_set(host, RRDHOST_FLAG_ARCHIVED);
     return host;
 }
 
@@ -473,6 +532,7 @@ void rrdhost_update(RRDHOST *host
 
     rrdhost_system_info_free(host->system_info);
     host->system_info = system_info;
+    sql_store_host_system_info(&host->host_uuid, system_info);
 
     rrdhost_init_os(host, os);
     rrdhost_init_timezone(host, timezone, abbrev_timezone, utc_offset);
@@ -516,6 +576,14 @@ void rrdhost_update(RRDHOST *host
 
     if (rrdhost_flag_check(host, RRDHOST_FLAG_ARCHIVED)) {
         rrdhost_flag_clear(host, RRDHOST_FLAG_ARCHIVED);
+
+        host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
+        host->rrdpush_send_destination = (host->rrdpush_send_enabled)?strdupz(rrdpush_destination):NULL;
+        if (host->rrdpush_send_destination)
+            host->destinations = destinations_init(host->rrdpush_send_destination);
+        host->rrdpush_send_api_key     = (host->rrdpush_send_enabled)?strdupz(rrdpush_api_key):NULL;
+        host->rrdpush_send_charts_matching = simple_pattern_create(rrdpush_send_charts_matching, NULL, SIMPLE_PATTERN_EXACT);
+
         if(host->health_enabled) {
             int r;
             char filename[FILENAME_MAX + 1];
@@ -551,6 +619,8 @@ void rrdhost_update(RRDHOST *host
             }
         }
         rrd_hosts_available++;
+        ml_new_host(host);
+        rrdhost_load_rrdcontext_data(host);
         info("Host %s is not in archived mode anymore", host->hostname);
     }
 
@@ -577,6 +647,7 @@ RRDHOST *rrdhost_find_or_create(
         , char *rrdpush_api_key
         , char *rrdpush_send_charts_matching
         , struct rrdhost_system_info *system_info
+        , bool archived
 ) {
     debug(D_RRDHOST, "Searching for host '%s' with guid '%s'", hostname, guid);
 
@@ -586,7 +657,7 @@ RRDHOST *rrdhost_find_or_create(
         /* If a legacy memory mode instantiates all dbengine state must be discarded to avoid inconsistencies */
         error("Archived host '%s' has memory mode '%s', but the wanted one is '%s'. Discarding archived state.",
               host->hostname, rrd_memory_mode_name(host->rrd_memory_mode), rrd_memory_mode_name(mode));
-        rrdhost_free(host);
+        rrdhost_free(host, 1);
         host = NULL;
     }
     if(!host) {
@@ -611,6 +682,7 @@ RRDHOST *rrdhost_find_or_create(
                 , rrdpush_send_charts_matching
                 , system_info
                 , 0
+                , archived
         );
     }
     else {
@@ -642,8 +714,6 @@ RRDHOST *rrdhost_find_or_create(
         rrdhost_unlock(host);
     }
 
-    rrdhost_cleanup_orphan_hosts_nolock(host);
-
     rrd_unlock();
 
     return host;
@@ -652,7 +722,8 @@ inline int rrdhost_should_be_removed(RRDHOST *host, RRDHOST *protected_host, tim
     if(host != protected_host
        && host != localhost
        && rrdhost_flag_check(host, RRDHOST_FLAG_ORPHAN)
-       && host->receiver
+       && !rrdhost_flag_check(host, RRDHOST_FLAG_ARCHIVED)
+       && !host->receiver
        && host->senders_disconnected_time
        && host->senders_disconnected_time + rrdhost_free_orphan_time < now)
         return 1;
@@ -673,14 +744,14 @@ restart_after_removal:
             if (rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_ORPHAN_HOST)
 #ifdef ENABLE_DBENGINE
                 /* don't delete multi-host DB host files */
-                && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx == &multidb_ctx)
+                && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && is_storage_engine_shared(host->storage_instance[0]))
 #endif
             )
                 rrdhost_delete_charts(host);
             else
                 rrdhost_save_charts(host);
 
-            rrdhost_free(host);
+            rrdhost_free(host, 0);
             goto restart_after_removal;
         }
     }
@@ -690,80 +761,177 @@ restart_after_removal:
 // RRDHOST global / startup initialization
 
 int rrd_init(char *hostname, struct rrdhost_system_info *system_info) {
-    rrdset_free_obsolete_time = config_get_number(CONFIG_SECTION_GLOBAL, "cleanup obsolete charts after seconds", rrdset_free_obsolete_time);
-    // Current chart locking and invalidation scheme doesn't prevent Netdata from segmentation faults if a short
-    // cleanup delay is set. Extensive stress tests showed that 10 seconds is quite a safe delay. Look at
-    // https://github.com/netdata/netdata/pull/11222#issuecomment-868367920 for more information.
-    if (rrdset_free_obsolete_time < 10) {
-        rrdset_free_obsolete_time = 10;
-        info("The \"cleanup obsolete charts after seconds\" option was set to 10 seconds. A lower delay can potentially cause a segmentation fault.");
-    }
-    gap_when_lost_iterations_above = (int)config_get_number(CONFIG_SECTION_GLOBAL, "gap when lost iterations above", gap_when_lost_iterations_above);
-    if (gap_when_lost_iterations_above < 1)
-        gap_when_lost_iterations_above = 1;
 
-    if (unlikely(sql_init_database(DB_CHECK_NONE))) {
+    if (unlikely(sql_init_database(DB_CHECK_NONE, system_info ? 0 : 1))) {
         if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
             fatal("Failed to initialize SQLite");
-        info("Skipping SQLITE metadata initialization since memory mode is not db engine");
+        info("Skipping SQLITE metadata initialization since memory mode is not dbengine");
     }
 
-    health_init();
+    if (unlikely(sql_init_context_database(system_info ? 0 : 1))) {
+        error_report("Failed to initialize context metadata database");
+    }
 
+    if (unlikely(!system_info))
+        goto unittest;
+
+#ifdef ENABLE_DBENGINE
+    storage_tiers = config_get_number(CONFIG_SECTION_DB, "storage tiers", storage_tiers);
+    if(storage_tiers < 1) {
+        error("At least 1 storage tier is required. Assuming 1.");
+        storage_tiers = 1;
+        config_set_number(CONFIG_SECTION_DB, "storage tiers", storage_tiers);
+    }
+    if(storage_tiers > RRD_STORAGE_TIERS) {
+        error("Up to %d storage tier are supported. Assuming %d.", RRD_STORAGE_TIERS, RRD_STORAGE_TIERS);
+        storage_tiers = RRD_STORAGE_TIERS;
+        config_set_number(CONFIG_SECTION_DB, "storage tiers", storage_tiers);
+    }
+
+    default_rrdeng_page_fetch_timeout = (int) config_get_number(CONFIG_SECTION_DB, "dbengine page fetch timeout secs", PAGE_CACHE_FETCH_WAIT_TIMEOUT);
+    if (default_rrdeng_page_fetch_timeout < 1) {
+        info("'dbengine page fetch timeout secs' cannot be %d, using 1", default_rrdeng_page_fetch_timeout);
+        default_rrdeng_page_fetch_timeout = 1;
+        config_set_number(CONFIG_SECTION_DB, "dbengine page fetch timeout secs", default_rrdeng_page_fetch_timeout);
+    }
+
+    default_rrdeng_page_fetch_retries = (int) config_get_number(CONFIG_SECTION_DB, "dbengine page fetch retries", MAX_PAGE_CACHE_FETCH_RETRIES);
+    if (default_rrdeng_page_fetch_retries < 1) {
+        info("\"dbengine page fetch retries\" found in netdata.conf cannot be %d, using 1", default_rrdeng_page_fetch_retries);
+        default_rrdeng_page_fetch_retries = 1;
+        config_set_number(CONFIG_SECTION_DB, "dbengine page fetch retries", default_rrdeng_page_fetch_retries);
+    }
+
+    if(config_get_boolean(CONFIG_SECTION_DB, "dbengine page descriptors in file mapped memory", rrdeng_page_descr_is_mmap()) == CONFIG_BOOLEAN_YES)
+        rrdeng_page_descr_use_mmap();
+    else
+        rrdeng_page_descr_use_malloc();
+
+    int created_tiers = 0;
+    char dbenginepath[FILENAME_MAX + 1];
+    char dbengineconfig[200 + 1];
+    for(int tier = 0; tier < storage_tiers ;tier++) {
+        if(tier == 0)
+            snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine", netdata_configured_cache_dir);
+        else
+            snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine-tier%d", netdata_configured_cache_dir, tier);
+
+        int ret = mkdir(dbenginepath, 0775);
+        if (ret != 0 && errno != EEXIST) {
+            error("DBENGINE on '%s': cannot create directory '%s'", hostname, dbenginepath);
+            break;
+        }
+
+        int page_cache_mb = default_rrdeng_page_cache_mb;
+        int disk_space_mb = default_multidb_disk_quota_mb;
+        int grouping_iterations = storage_tiers_grouping_iterations[tier];
+        RRD_BACKFILL backfill = storage_tiers_backfill[tier];
+
+        if(tier > 0) {
+            snprintfz(dbengineconfig, 200, "dbengine tier %d page cache size MB", tier);
+            page_cache_mb = config_get_number(CONFIG_SECTION_DB, dbengineconfig, page_cache_mb);
+
+            snprintfz(dbengineconfig, 200, "dbengine tier %d multihost disk space MB", tier);
+            disk_space_mb = config_get_number(CONFIG_SECTION_DB, dbengineconfig, disk_space_mb);
+
+            snprintfz(dbengineconfig, 200, "dbengine tier %d update every iterations", tier);
+            grouping_iterations = config_get_number(CONFIG_SECTION_DB, dbengineconfig, grouping_iterations);
+            if(grouping_iterations < 2) {
+                grouping_iterations = 2;
+                config_set_number(CONFIG_SECTION_DB, dbengineconfig, grouping_iterations);
+                error("DBENGINE on '%s': 'dbegnine tier %d update every iterations' cannot be less than 2. Assuming 2.", hostname, tier);
+            }
+
+            snprintfz(dbengineconfig, 200, "dbengine tier %d backfill", tier);
+            const char *bf = config_get(CONFIG_SECTION_DB, dbengineconfig, backfill == RRD_BACKFILL_NEW ? "new" : backfill == RRD_BACKFILL_FULL ? "full" : "none");
+            if(strcmp(bf, "new") == 0) backfill = RRD_BACKFILL_NEW;
+            else if(strcmp(bf, "full") == 0) backfill = RRD_BACKFILL_FULL;
+            else if(strcmp(bf, "none") == 0) backfill = RRD_BACKFILL_NONE;
+            else {
+                error("DBENGINE: unknown backfill value '%s', assuming 'new'", bf);
+                config_set(CONFIG_SECTION_DB, dbengineconfig, "new");
+                backfill = RRD_BACKFILL_NEW;
+            }
+        }
+
+        storage_tiers_grouping_iterations[tier] = grouping_iterations;
+        storage_tiers_backfill[tier] = backfill;
+
+        if(tier > 0 && get_tier_grouping(tier) > 65535) {
+            storage_tiers_grouping_iterations[tier] = 1;
+            error("DBENGINE on '%s': dbengine tier %d gives aggregation of more than 65535 points of tier 0. Disabling tiers above %d", hostname, tier, tier);
+            break;
+        }
+        
+        internal_error(true, "DBENGINE tier %d grouping iterations is set to %d", tier, storage_tiers_grouping_iterations[tier]);
+        ret = rrdeng_init(NULL, NULL, dbenginepath, page_cache_mb, disk_space_mb, tier);
+        if(ret != 0) {
+            error("DBENGINE on '%s': Failed to initialize multi-host database tier %d on path '%s'",
+                  hostname, tier, dbenginepath);
+            break;
+        }
+        else
+            created_tiers++;
+    }
+
+    if(created_tiers && created_tiers < storage_tiers) {
+        error("DBENGINE on '%s': Managed to create %d tiers instead of %d. Continuing with %d available.",
+              hostname, created_tiers, storage_tiers, created_tiers);
+        storage_tiers = created_tiers;
+    }
+    else if(!created_tiers)
+        fatal("DBENGINE on '%s', failed to initialize databases at '%s'.", hostname, netdata_configured_cache_dir);
+
+#else
+    storage_tiers = config_get_number(CONFIG_SECTION_DB, "storage tiers", 1);
+    if(storage_tiers != 1) {
+        error("DBENGINE is not available on '%s', so only 1 database tier can be supported.", hostname);
+        storage_tiers = 1;
+        config_set_number(CONFIG_SECTION_DB, "storage tiers", storage_tiers);
+    }
+#endif
+
+    health_init();
     rrdpush_init();
 
+unittest:
     debug(D_RRDHOST, "Initializing localhost with hostname '%s'", hostname);
     rrd_wrlock();
     localhost = rrdhost_create(
-            hostname
-            , registry_get_this_machine_hostname()
+        hostname
+        , registry_get_this_machine_hostname()
             , registry_get_this_machine_guid()
             , os_type
-            , netdata_configured_timezone
-            , netdata_configured_abbrev_timezone
-            , netdata_configured_utc_offset
-            , config_get(CONFIG_SECTION_BACKEND, "host tags", "")
-            , program_name
-            , program_version
-            , default_rrd_update_every
-            , default_rrd_history_entries
-            , default_rrd_memory_mode
-            , default_health_enabled
-            , default_rrdpush_enabled
-            , default_rrdpush_destination
-            , default_rrdpush_api_key
-            , default_rrdpush_send_charts_matching
-            , system_info
-            , 1
+        , netdata_configured_timezone
+        , netdata_configured_abbrev_timezone
+        , netdata_configured_utc_offset
+        , ""
+        , program_name
+        , program_version
+        , default_rrd_update_every
+        , default_rrd_history_entries
+        , default_rrd_memory_mode
+        , default_health_enabled
+        , default_rrdpush_enabled
+        , default_rrdpush_destination
+        , default_rrdpush_api_key
+        , default_rrdpush_send_charts_matching
+        , system_info
+        , 1
+        , 0
     );
     if (unlikely(!localhost)) {
         rrd_unlock();
         return 1;
     }
 
-#ifdef ENABLE_DBENGINE
-    char dbenginepath[FILENAME_MAX + 1];
-    int ret;
-    snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine", localhost->cache_dir);
-    ret = mkdir(dbenginepath, 0775);
-    if (ret != 0 && errno != EEXIST)
-        error("Host '%s': cannot create directory '%s'", localhost->hostname, dbenginepath);
-    else  // Unconditionally create multihost db to support on demand host creation
-        ret = rrdeng_init(NULL, NULL, dbenginepath, default_rrdeng_page_cache_mb, default_multidb_disk_quota_mb);
-    if (ret) {
-        error(
-            "Host '%s' with machine guid '%s' failed to initialize multi-host DB engine instance at '%s'.",
-            localhost->hostname, localhost->machine_guid, localhost->cache_dir);
-        rrdhost_free(localhost);
-        localhost = NULL;
-        rrd_unlock();
-        fatal("Failed to initialize dbengine");
-    }
-#endif
-    sql_aclk_sync_init();
     rrd_unlock();
 
-    web_client_api_v1_management_init();
+    if (likely(system_info)) {
+        migrate_localhost(&localhost->host_uuid);
+        sql_aclk_sync_init();
+        web_client_api_v1_management_init();
+    }
     return localhost==NULL;
 }
 
@@ -810,6 +978,9 @@ void rrdhost_system_info_free(struct rrdhost_system_info *system_info) {
     info("SYSTEM_INFO: free %p", system_info);
 
     if(likely(system_info)) {
+        freez(system_info->cloud_provider_type);
+        freez(system_info->cloud_instance_type);
+        freez(system_info->cloud_instance_region);
         freez(system_info->host_os_name);
         freez(system_info->host_os_id);
         freez(system_info->host_os_id_like);
@@ -834,20 +1005,20 @@ void rrdhost_system_info_free(struct rrdhost_system_info *system_info) {
         freez(system_info->container);
         freez(system_info->container_detection);
         freez(system_info->is_k8s_node);
+        freez(system_info->install_type);
+        freez(system_info->prebuilt_arch);
+        freez(system_info->prebuilt_dist);
         freez(system_info);
     }
 }
 
 void destroy_receiver_state(struct receiver_state *rpt);
-void rrdhost_free(RRDHOST *host) {
-    if(!host) return;
 
-    info("Freeing all memory for host '%s'...", host->hostname);
+void stop_streaming_sender(RRDHOST *host)
+{
+    if (unlikely(!host->sender))
+        return;
 
-    rrd_check_wrlock();     // make sure the RRDs are write locked
-
-    // ------------------------------------------------------------------------
-    // clean up streaming
     rrdpush_sender_thread_stop(host); // stop a possibly running thread
     cbuffer_free(host->sender->buffer);
     buffer_free(host->sender->build);
@@ -857,36 +1028,57 @@ void rrdhost_free(RRDHOST *host) {
 #endif
     freez(host->sender);
     host->sender = NULL;
-    if (netdata_exit) {
-        netdata_mutex_lock(&host->receiver_lock);
-        if (host->receiver) {
-            if (!host->receiver->exited)
-                netdata_thread_cancel(host->receiver->thread);
-            netdata_mutex_unlock(&host->receiver_lock);
-            struct receiver_state *rpt = host->receiver;
-            while (host->receiver && !rpt->exited)
-                sleep_usec(50 * USEC_PER_MS);
-            // If the receiver detached from the host then its thread will destroy the state
-            if (host->receiver == rpt)
-                destroy_receiver_state(host->receiver);
-        }
-        else
-            netdata_mutex_unlock(&host->receiver_lock);
-    }
+}
 
+void stop_streaming_receiver(RRDHOST *host)
+{
+    netdata_mutex_lock(&host->receiver_lock);
+    if (host->receiver) {
+        if (!host->receiver->exited)
+            netdata_thread_cancel(host->receiver->thread);
+        netdata_mutex_unlock(&host->receiver_lock);
+        struct receiver_state *rpt = host->receiver;
+        while (host->receiver && !rpt->exited)
+            sleep_usec(50 * USEC_PER_MS);
+        // If the receiver detached from the host then its thread will destroy the state
+        if (host->receiver == rpt)
+            destroy_receiver_state(host->receiver);
+    } else
+        netdata_mutex_unlock(&host->receiver_lock);
+}
 
+void rrdhost_free(RRDHOST *host, bool force) {
+    if(!host) return;
+
+    if (netdata_exit || force)
+        info("Freeing all memory for host '%s'...", host->hostname);
+
+    rrd_check_wrlock();     // make sure the RRDs are write locked
+
+    rrdhost_wrlock(host);
+    ml_delete_host(host);
+    rrdhost_unlock(host);
+
+    // ------------------------------------------------------------------------
+    // clean up streaming
+    stop_streaming_sender(host);
+
+    if (netdata_exit || force)
+        stop_streaming_receiver(host);
 
     rrdhost_wrlock(host);   // lock this RRDHOST
-
     // ------------------------------------------------------------------------
     // release its children resources
 
 #ifdef ENABLE_DBENGINE
-    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
-        if (host->rrdeng_ctx != &multidb_ctx)
-            rrdeng_prepare_exit(host->rrdeng_ctx);
+    for(int tier = 0; tier < storage_tiers ;tier++) {
+        if(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE &&
+            host->storage_instance[tier] &&
+            !is_storage_engine_shared(host->storage_instance[tier]))
+            rrdeng_prepare_exit((struct rrdengine_instance *)host->storage_instance[tier]);
     }
 #endif
+
     while(host->rrdset_root)
         rrdset_free(host->rrdset_root);
 
@@ -918,18 +1110,41 @@ void rrdhost_free(RRDHOST *host) {
     health_alarm_log_free(host);
 
 #ifdef ENABLE_DBENGINE
-    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx != &multidb_ctx)
-        rrdeng_exit(host->rrdeng_ctx);
+    for(int tier = 0; tier < storage_tiers ;tier++) {
+        if(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE &&
+            host->storage_instance[tier] &&
+            !is_storage_engine_shared(host->storage_instance[tier]))
+            rrdeng_exit((struct rrdengine_instance *)host->storage_instance[tier]);
+    }
 #endif
 
-    ml_delete_host(host);
+    if (!netdata_exit && !force) {
+        info("Setting archive mode for host '%s'...", host->hostname);
+        rrdhost_flag_set(host, RRDHOST_FLAG_ARCHIVED);
+        rrdhost_unlock(host);
+        return;
+    }
+
+#ifdef ENABLE_ACLK
+    struct aclk_database_worker_config *wc =  host->dbsync_worker;
+    if (wc && !netdata_exit) {
+        struct aclk_database_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.opcode = ACLK_DATABASE_ORPHAN_HOST;
+        struct aclk_completion compl ;
+        init_aclk_completion(&compl );
+        cmd.completion = &compl ;
+        aclk_database_enq_cmd(wc, &cmd);
+        wait_for_aclk_completion(&compl );
+        destroy_aclk_completion(&compl );
+    }
+#endif
 
     // ------------------------------------------------------------------------
     // remove it from the indexes
 
     if(rrdhost_index_del(host) != host)
         error("RRDHOST '%s' removed from index, deleted the wrong entry.", host->hostname);
-
 
     // ------------------------------------------------------------------------
     // unlink it from the host
@@ -947,8 +1162,6 @@ void rrdhost_free(RRDHOST *host) {
         else error("Request to free RRDHOST '%s': cannot find it", host->hostname);
     }
 
-
-
     // ------------------------------------------------------------------------
     // free it
 
@@ -956,7 +1169,7 @@ void rrdhost_free(RRDHOST *host) {
     freez(host->aclk_state.claimed_id);
     freez(host->aclk_state.prev_claimed_id);
     freez((void *)host->tags);
-    free_label_list(host->labels.head);
+    rrdlabels_destroy(host->host_labels);
     freez((void *)host->os);
     freez((void *)host->timezone);
     freez((void *)host->abbrev_timezone);
@@ -967,6 +1180,12 @@ void rrdhost_free(RRDHOST *host) {
     freez(host->varlib_dir);
     freez(host->rrdpush_send_api_key);
     freez(host->rrdpush_send_destination);
+    struct rrdpush_destinations *tmp_destination;
+    while (host->destinations) {
+        tmp_destination = host->destinations->next;
+        freez(host->destinations);
+        host->destinations = tmp_destination;
+    }
     freez(host->health_default_exec);
     freez(host->health_default_recipient);
     freez(host->health_log_filename);
@@ -974,21 +1193,25 @@ void rrdhost_free(RRDHOST *host) {
     freez(host->registry_hostname);
     simple_pattern_free(host->rrdpush_send_charts_matching);
     rrdhost_unlock(host);
-    netdata_rwlock_destroy(&host->labels.labels_rwlock);
     netdata_rwlock_destroy(&host->health_log.alarm_log_rwlock);
     netdata_rwlock_destroy(&host->rrdhost_rwlock);
     freez(host->node_id);
 
-    freez(host);
+    rrdhost_destroy_rrdcontexts(host);
 
+    freez(host);
+#ifdef ENABLE_ACLK
+    if (wc)
+        wc->is_orphan = 0;
+#endif
     rrd_hosts_available--;
 }
 
 void rrdhost_free_all(void) {
     rrd_wrlock();
     /* Make sure child-hosts are released before the localhost. */
-    while(localhost->next) rrdhost_free(localhost->next);
-    rrdhost_free(localhost);
+    while(localhost->next) rrdhost_free(localhost->next, 1);
+    rrdhost_free(localhost, 1);
     rrd_unlock();
 }
 
@@ -1015,319 +1238,139 @@ void rrdhost_save_charts(RRDHOST *host) {
     rrdhost_unlock(host);
 }
 
-static struct label *rrdhost_load_auto_labels(void)
-{
-    struct label *label_list = NULL;
+static void rrdhost_load_auto_labels(void) {
+    DICTIONARY *labels = localhost->host_labels;
+
+    if (localhost->system_info->cloud_provider_type)
+        rrdlabels_add(labels, "_cloud_provider_type", localhost->system_info->cloud_provider_type, RRDLABEL_SRC_AUTO);
+
+    if (localhost->system_info->cloud_instance_type)
+        rrdlabels_add(labels, "_cloud_instance_type", localhost->system_info->cloud_instance_type, RRDLABEL_SRC_AUTO);
+
+    if (localhost->system_info->cloud_instance_region)
+        rrdlabels_add(
+            labels, "_cloud_instance_region", localhost->system_info->cloud_instance_region, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->host_os_name)
-        label_list =
-            add_label_to_list(label_list, "_os_name", localhost->system_info->host_os_name, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_os_name", localhost->system_info->host_os_name, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->host_os_version)
-        label_list =
-            add_label_to_list(label_list, "_os_version", localhost->system_info->host_os_version, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_os_version", localhost->system_info->host_os_version, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->kernel_version)
-        label_list =
-            add_label_to_list(label_list, "_kernel_version", localhost->system_info->kernel_version, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_kernel_version", localhost->system_info->kernel_version, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->host_cores)
-        label_list =
-                add_label_to_list(label_list, "_system_cores", localhost->system_info->host_cores, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_system_cores", localhost->system_info->host_cores, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->host_cpu_freq)
-        label_list =
-                add_label_to_list(label_list, "_system_cpu_freq", localhost->system_info->host_cpu_freq, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_system_cpu_freq", localhost->system_info->host_cpu_freq, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->host_ram_total)
-        label_list =
-                add_label_to_list(label_list, "_system_ram_total", localhost->system_info->host_ram_total, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_system_ram_total", localhost->system_info->host_ram_total, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->host_disk_space)
-        label_list =
-                add_label_to_list(label_list, "_system_disk_space", localhost->system_info->host_disk_space, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_system_disk_space", localhost->system_info->host_disk_space, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->architecture)
-        label_list =
-            add_label_to_list(label_list, "_architecture", localhost->system_info->architecture, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_architecture", localhost->system_info->architecture, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->virtualization)
-        label_list =
-            add_label_to_list(label_list, "_virtualization", localhost->system_info->virtualization, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_virtualization", localhost->system_info->virtualization, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->container)
-        label_list =
-            add_label_to_list(label_list, "_container", localhost->system_info->container, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_container", localhost->system_info->container, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->container_detection)
-        label_list =
-            add_label_to_list(label_list, "_container_detection", localhost->system_info->container_detection, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_container_detection", localhost->system_info->container_detection, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->virt_detection)
-        label_list =
-            add_label_to_list(label_list, "_virt_detection", localhost->system_info->virt_detection, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_virt_detection", localhost->system_info->virt_detection, RRDLABEL_SRC_AUTO);
 
     if (localhost->system_info->is_k8s_node)
-        label_list =
-            add_label_to_list(label_list, "_is_k8s_node", localhost->system_info->is_k8s_node, LABEL_SOURCE_AUTO);
+        rrdlabels_add(labels, "_is_k8s_node", localhost->system_info->is_k8s_node, RRDLABEL_SRC_AUTO);
 
-    label_list = add_aclk_host_labels(label_list);
+    if (localhost->system_info->install_type)
+        rrdlabels_add(labels, "_install_type", localhost->system_info->install_type, RRDLABEL_SRC_AUTO);
 
-    label_list = add_label_to_list(
-        label_list, "_is_parent", (localhost->next || configured_as_parent()) ? "true" : "false", LABEL_SOURCE_AUTO);
+    if (localhost->system_info->prebuilt_arch)
+        rrdlabels_add(labels, "_prebuilt_arch", localhost->system_info->prebuilt_arch, RRDLABEL_SRC_AUTO);
+
+    if (localhost->system_info->prebuilt_dist)
+        rrdlabels_add(labels, "_prebuilt_dist", localhost->system_info->prebuilt_dist, RRDLABEL_SRC_AUTO);
+
+    add_aclk_host_labels();
+
+    rrdlabels_add(
+        labels, "_is_parent", (localhost->next || configured_as_parent()) ? "true" : "false", RRDLABEL_SRC_AUTO);
 
     if (localhost->rrdpush_send_destination)
-        label_list =
-            add_label_to_list(label_list, "_streams_to", localhost->rrdpush_send_destination, LABEL_SOURCE_AUTO);
-
-    return label_list;
+        rrdlabels_add(labels, "_streams_to", localhost->rrdpush_send_destination, RRDLABEL_SRC_AUTO);
 }
 
-static inline int rrdhost_is_valid_label_config_option(char *name, char *value)
-{
-    return (is_valid_label_key(name) && is_valid_label_value(value) && strcmp(name, "from environment") &&
-            strcmp(name, "from kubernetes pods"));
-}
-
-static struct label *rrdhost_load_config_labels()
-{
+static void rrdhost_load_config_labels(void) {
     int status = config_load(NULL, 1, CONFIG_SECTION_HOST_LABEL);
     if(!status) {
         char *filename = CONFIG_DIR "/" CONFIG_FILENAME;
-        error("LABEL: Cannot reload the configuration file '%s', using labels in memory", filename);
+        error("RRDLABEL: Cannot reload the configuration file '%s', using labels in memory", filename);
     }
 
-    struct label *l = NULL;
     struct section *co = appconfig_get_section(&netdata_config, CONFIG_SECTION_HOST_LABEL);
     if(co) {
         config_section_wrlock(co);
         struct config_option *cv;
         for(cv = co->values; cv ; cv = cv->next) {
-            if(rrdhost_is_valid_label_config_option(cv->name, cv->value)) {
-                l = add_label_to_list(l, cv->name, cv->value, LABEL_SOURCE_NETDATA_CONF);
-                cv->flags |= CONFIG_VALUE_USED;
-            } else {
-                error("LABELS: It was not possible to create the label '%s' because it contains invalid character(s) or values."
-                       , cv->name);
-            }
+            rrdlabels_add(localhost->host_labels, cv->name, cv->value, RRDLABEL_SRC_CONFIG);
+            cv->flags |= CONFIG_VALUE_USED;
         }
         config_section_unlock(co);
     }
-
-    return l;
 }
 
-struct label *parse_simple_tags(
-    struct label *label_list,
-    const char *tags,
-    char key_value_separator,
-    char label_separator,
-    STRIP_QUOTES_OPTION strip_quotes_from_key,
-    STRIP_QUOTES_OPTION strip_quotes_from_value,
-    SKIP_ESCAPED_CHARACTERS_OPTION skip_escaped_characters)
-{
-    const char *end = tags;
-
-    while (*end) {
-        const char *start = end;
-        char key[CONFIG_MAX_VALUE + 1];
-        char value[CONFIG_MAX_VALUE + 1];
-
-        while (*end && *end != key_value_separator)
-            end++;
-        strncpyz(key, start, end - start);
-
-        if (*end)
-            start = ++end;
-        while (*end && *end != label_separator)
-            end++;
-        strncpyz(value, start, end - start);
-
-        label_list = add_label_to_list(
-            label_list,
-            strip_quotes_from_key ? strip_double_quotes(trim(key), skip_escaped_characters) : trim(key),
-            strip_quotes_from_value ? strip_double_quotes(trim(value), skip_escaped_characters) : trim(value),
-            LABEL_SOURCE_NETDATA_CONF);
-
-        if (*end)
-            end++;
-    }
-
-    return label_list;
-}
-
-struct label *parse_json_tags(struct label *label_list, const char *tags)
-{
-    char tags_buf[CONFIG_MAX_VALUE + 1];
-    strncpy(tags_buf, tags, CONFIG_MAX_VALUE);
-    char *str = tags_buf;
-
-    switch (*str) {
-    case '{':
-        str++;
-        strip_last_symbol(str, '}', SKIP_ESCAPED_CHARACTERS);
-
-        label_list = parse_simple_tags(label_list, str, ':', ',', STRIP_QUOTES, STRIP_QUOTES, SKIP_ESCAPED_CHARACTERS);
-
-        break;
-    case '[':
-        str++;
-        strip_last_symbol(str, ']', SKIP_ESCAPED_CHARACTERS);
-
-        char *end = str + strlen(str);
-        size_t i = 0;
-
-        while (str < end) {
-            char key[CONFIG_MAX_VALUE + 1];
-            snprintfz(key, CONFIG_MAX_VALUE, "host_tag%zu", i);
-
-            str = strip_double_quotes(trim(str), SKIP_ESCAPED_CHARACTERS);
-
-            label_list = add_label_to_list(label_list, key, str, LABEL_SOURCE_NETDATA_CONF);
-
-            // skip to the next element in the array
-            str += strlen(str) + 1;
-            while (*str && *str != ',')
-                str++;
-            str++;
-            i++;
-        }
-
-        break;
-    case '"':
-        label_list = add_label_to_list(
-            label_list, "host_tag", strip_double_quotes(str, SKIP_ESCAPED_CHARACTERS), LABEL_SOURCE_NETDATA_CONF);
-        break;
-    default:
-        label_list = add_label_to_list(label_list, "host_tag", str, LABEL_SOURCE_NETDATA_CONF);
-        break;
-    }
-
-    return label_list;
-}
-
-static struct label *rrdhost_load_labels_from_tags(void)
-{
-    if (!localhost->tags)
-        return NULL;
-
-    struct label *label_list = NULL;
-    BACKEND_TYPE type = BACKEND_TYPE_UNKNOWN;
-
-    if (config_exists(CONFIG_SECTION_BACKEND, "enabled")) {
-        if (config_get_boolean(CONFIG_SECTION_BACKEND, "enabled", CONFIG_BOOLEAN_NO) != CONFIG_BOOLEAN_NO) {
-            const char *type_name = config_get(CONFIG_SECTION_BACKEND, "type", "graphite");
-            type = backend_select_type(type_name);
-        }
-    }
-
-    switch (type) {
-        case BACKEND_TYPE_GRAPHITE:
-            label_list = parse_simple_tags(
-                label_list, localhost->tags, '=', ';', DO_NOT_STRIP_QUOTES, DO_NOT_STRIP_QUOTES,
-                DO_NOT_SKIP_ESCAPED_CHARACTERS);
-            break;
-        case BACKEND_TYPE_OPENTSDB_USING_TELNET:
-            label_list = parse_simple_tags(
-                label_list, localhost->tags, '=', ' ', DO_NOT_STRIP_QUOTES, DO_NOT_STRIP_QUOTES,
-                DO_NOT_SKIP_ESCAPED_CHARACTERS);
-            break;
-        case BACKEND_TYPE_OPENTSDB_USING_HTTP:
-            label_list = parse_simple_tags(
-                label_list, localhost->tags, ':', ',', STRIP_QUOTES, STRIP_QUOTES,
-                DO_NOT_SKIP_ESCAPED_CHARACTERS);
-            break;
-        case BACKEND_TYPE_JSON:
-            label_list = parse_json_tags(label_list, localhost->tags);
-            break;
-        default:
-            label_list = parse_simple_tags(
-                label_list, localhost->tags, '=', ',', DO_NOT_STRIP_QUOTES, STRIP_QUOTES,
-                DO_NOT_SKIP_ESCAPED_CHARACTERS);
-            break;
-    }
-
-    return label_list;
-}
-
-static struct label *rrdhost_load_kubernetes_labels(void)
-{
-    struct label *l=NULL;
-    char *label_script = mallocz(sizeof(char) * (strlen(netdata_configured_primary_plugins_dir) + strlen("get-kubernetes-labels.sh") + 2));
+static void rrdhost_load_kubernetes_labels(void) {
+    char label_script[sizeof(char) * (strlen(netdata_configured_primary_plugins_dir) + strlen("get-kubernetes-labels.sh") + 2)];
     sprintf(label_script, "%s/%s", netdata_configured_primary_plugins_dir, "get-kubernetes-labels.sh");
+
     if (unlikely(access(label_script, R_OK) != 0)) {
         error("Kubernetes pod label fetching script %s not found.",label_script);
-        freez(label_script);
-    } else {
-        pid_t command_pid;
-
-        debug(D_RRDHOST, "Attempting to fetch external labels via %s", label_script);
-
-        FILE *fp = mypopen(label_script, &command_pid);
-        if(fp) {
-            int MAX_LINE_SIZE=300;
-            char buffer[MAX_LINE_SIZE + 1];
-            while (fgets(buffer, MAX_LINE_SIZE, fp) != NULL) {
-                char *name=buffer;
-                char *value=buffer;
-                while (*value && *value != ':') value++;
-                if (*value == ':') {
-                    *value = '\0';
-                    value++;
-                }
-                char *eos=value;
-                while (*eos && *eos != '\n') eos++;
-                if (*eos == '\n') *eos = '\0';
-                if (strlen(value)>0) {
-                    if (is_valid_label_key(name)){
-                        l = add_label_to_list(l, name, value, LABEL_SOURCE_KUBERNETES);
-                    } else {
-                        info("Ignoring invalid label name '%s'", name);
-                    }
-                } else {
-                    error("%s outputted unexpected result: '%s'", label_script, name);
-                }
-            };
-            // Non-zero exit code means that all the script output is error messages. We've shown already any message that didn't include a ':'
-            // Here we'll inform with an ERROR that the script failed, show whatever (if anything) was added to the list of labels, free the memory and set the return to null
-            int retcode=mypclose(fp, command_pid);
-            if (retcode) {
-                error("%s exited abnormally. No kubernetes labels will be added to the host.", label_script);
-                struct label *ll=l;
-                while (ll != NULL) {
-                    info("Ignoring Label [source id=%s]: \"%s\" -> \"%s\"\n", translate_label_source(ll->label_source), ll->key, ll->value);
-                    ll = ll->next;
-                    freez(l);
-                    l=ll;
-                }
-            }
-        }
-        freez(label_script);
+        return;
     }
 
-    return l;
+    debug(D_RRDHOST, "Attempting to fetch external labels via %s", label_script);
+
+    pid_t pid;
+    FILE *fp = mypopen(label_script, &pid);
+    if(!fp) return;
+
+    char buffer[1000 + 1];
+    while (fgets(buffer, 1000, fp) != NULL)
+        rrdlabels_add_pair(localhost->host_labels, buffer, RRDLABEL_SRC_AUTO|RRDLABEL_SRC_K8S);
+
+    // Non-zero exit code means that all the script output is error messages. We've shown already any message that didn't include a ':'
+    // Here we'll inform with an ERROR that the script failed, show whatever (if anything) was added to the list of labels, free the memory and set the return to null
+    int rc = mypclose(fp, pid);
+    if(rc) error("%s exited abnormally. Failed to get kubernetes labels.", label_script);
 }
 
-void reload_host_labels(void)
-{
-    struct label *from_auto = rrdhost_load_auto_labels();
-    struct label *from_k8s = rrdhost_load_kubernetes_labels();
-    struct label *from_config = rrdhost_load_config_labels();
-    struct label *from_tags = rrdhost_load_labels_from_tags();
+void reload_host_labels(void) {
+    if(!localhost->host_labels)
+        localhost->host_labels = rrdlabels_create();
 
-    struct label *new_labels = merge_label_lists(from_auto, from_k8s);
-    new_labels = merge_label_lists(new_labels, from_tags);
-    new_labels = merge_label_lists(new_labels, from_config);
+    rrdlabels_unmark_all(localhost->host_labels);
 
-    rrdhost_rdlock(localhost);
-    replace_label_list(&localhost->labels, new_labels);
+    // priority is important here
+    rrdhost_load_config_labels();
+    rrdhost_load_kubernetes_labels();
+    rrdhost_load_auto_labels();
+
+    rrdlabels_remove_all_unmarked(localhost->host_labels);
+    sql_store_host_labels(localhost);
 
     health_label_log_save(localhost);
-    rrdhost_unlock(localhost);
 
 /*  TODO-GAPS - fix this so that it looks properly at the state and version of the sender
     if(localhost->rrdpush_send_enabled && localhost->rrdpush_sender_buffer){
-        localhost->labels.labels_flag |= LABEL_FLAG_UPDATE_STREAM;
+        localhost->labels.labels_flag |= RRDHOST_FLAG_STREAM_LABELS_UPDATE;
         rrdpush_send_labels(localhost);
     }
 */
@@ -1350,7 +1393,7 @@ void rrdhost_delete_charts(RRDHOST *host) {
 
     rrdset_foreach_write(st, host) {
         rrdset_rdlock(st);
-        rrdset_delete(st);
+        rrdset_delete_files(st);
         rrdset_unlock(st);
     }
 
@@ -1378,7 +1421,7 @@ void rrdhost_cleanup_charts(RRDHOST *host) {
         rrdset_rdlock(st);
 
         if(rrdhost_delete_obsolete_charts && rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE))
-            rrdset_delete(st);
+            rrdset_delete_files(st);
         else if(rrdhost_delete_obsolete_charts && rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE_DIMENSIONS))
             rrdset_delete_obsolete_dimensions(st);
         else
@@ -1419,7 +1462,7 @@ void rrdhost_cleanup_all(void) {
         if (host != localhost && rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_ORPHAN_HOST) && !host->receiver
 #ifdef ENABLE_DBENGINE
             /* don't delete multi-host DB host files */
-            && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx == &multidb_ctx)
+            && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && is_storage_engine_shared(host->storage_instance[0]))
 #endif
         )
             rrdhost_delete_charts(host);
@@ -1475,11 +1518,24 @@ restart_after_removal:
 
                     if (rrddim_flag_check(rd, RRDDIM_FLAG_OBSOLETE)) {
                         rrddim_flag_clear(rd, RRDDIM_FLAG_OBSOLETE);
+
                         /* only a collector can mark a chart as obsolete, so we must remove the reference */
-                        uint8_t can_delete_metric = rd->state->collect_ops.finalize(rd);
-                        if (can_delete_metric) {
+
+                        size_t tiers_available = 0, tiers_said_yes = 0;
+                        for(int tier = 0; tier < storage_tiers ;tier++) {
+                            if(rd->tiers[tier]) {
+                                tiers_available++;
+
+                                if(rd->tiers[tier]->collect_ops.finalize(rd->tiers[tier]->db_collection_handle))
+                                    tiers_said_yes++;
+
+                                rd->tiers[tier]->db_collection_handle = NULL;
+                            }
+                        }
+
+                        if (tiers_available == tiers_said_yes && tiers_said_yes) {
                             /* This metric has no data and no references */
-                            delete_dimension_uuid(&rd->state->metric_uuid);
+                            delete_dimension_uuid(&rd->metric_uuid);
                             rrddim_free(st, rd);
                             if (unlikely(!last)) {
                                 rd = st->dimensions;
@@ -1489,6 +1545,10 @@ restart_after_removal:
                             }
                             continue;
                         }
+#ifdef ENABLE_ACLK
+                        else
+                            queue_dimension_to_aclk(rd, rd->last_collected_time.tv_sec);
+#endif
                     }
                     last = rd;
                     rd = rd->next;
@@ -1509,7 +1569,7 @@ restart_after_removal:
             rrdset_rdlock(st);
 
             if(rrdhost_delete_obsolete_charts)
-                rrdset_delete(st);
+                rrdset_delete_files(st);
             else
                 rrdset_save(st);
 
@@ -1517,6 +1577,22 @@ restart_after_removal:
 
             rrdset_free(st);
             goto restart_after_removal;
+        }
+#ifdef ENABLE_ACLK
+        else
+            sql_check_chart_liveness(st);
+#endif
+    }
+}
+
+void rrdset_check_obsoletion(RRDHOST *host)
+{
+    RRDSET *st;
+    time_t last_entry_t;
+    rrdset_foreach_read(st, host) {
+        last_entry_t = rrdset_last_entry_t(st);
+        if (last_entry_t && last_entry_t < host->senders_connect_time) {
+            rrdset_is_obsolete(st);
         }
     }
 }
@@ -1530,15 +1606,19 @@ void rrd_cleanup_obsolete_charts()
     {
         if (host->obsolete_charts_count) {
             rrdhost_wrlock(host);
-#ifdef ENABLE_ACLK
-            host->deleted_charts_count = 0;
-#endif
             rrdhost_cleanup_obsolete_charts(host);
-#ifdef ENABLE_ACLK
-            if (host->deleted_charts_count)
-                aclk_update_chart(host, "dummy-chart", 0);
-#endif
             rrdhost_unlock(host);
+        }
+
+        if ( host != localhost &&
+             host->trigger_chart_obsoletion_check &&
+             ((host->senders_last_chart_command &&
+             host->senders_last_chart_command + host->health_delay_up_to < now_realtime_sec())
+              || (host->senders_connect_time + 300 < now_realtime_sec())) ) {
+            rrdhost_rdlock(host);
+            rrdset_check_obsoletion(host);
+            rrdhost_unlock(host);
+            host->trigger_chart_obsoletion_check = 0;
         }
     }
 
@@ -1553,6 +1633,18 @@ int rrdhost_set_system_info_variable(struct rrdhost_system_info *system_info, ch
 
     if (!strcmp(name, "NETDATA_PROTOCOL_VERSION"))
         return res;
+    else if(!strcmp(name, "NETDATA_INSTANCE_CLOUD_TYPE")){
+        freez(system_info->cloud_provider_type);
+        system_info->cloud_provider_type = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_INSTANCE_CLOUD_INSTANCE_TYPE")){
+        freez(system_info->cloud_instance_type);
+        system_info->cloud_instance_type = strdupz(value);
+    }
+    else if(!strcmp(name, "NETDATA_INSTANCE_CLOUD_INSTANCE_REGION")){
+        freez(system_info->cloud_instance_region);
+        system_info->cloud_instance_region = strdupz(value);
+    }
     else if(!strcmp(name, "NETDATA_CONTAINER_OS_NAME")){
         freez(system_info->container_os_name);
         system_info->container_os_name = strdupz(value);
@@ -1580,6 +1672,7 @@ int rrdhost_set_system_info_variable(struct rrdhost_system_info *system_info, ch
     else if(!strcmp(name, "NETDATA_HOST_OS_NAME")){
         freez(system_info->host_os_name);
         system_info->host_os_name = strdupz(value);
+        json_fix_string(system_info->host_os_name);
     }
     else if(!strcmp(name, "NETDATA_HOST_OS_ID")){
         freez(system_info->host_os_id);

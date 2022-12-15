@@ -26,7 +26,7 @@ dist_web_DATA = \
     index.html \
     infographic.html \
     manifest.json \
-    precache-manifest.defc120efbf19d0eaabf8dbed8985e40.js \
+    precache-manifest.e95d658eed560f9e0189217cc6919238.js \
     refresh-badges.js \
     robots.txt \
     service-worker.js \
@@ -61,6 +61,8 @@ dist_webimages_DATA = \
     images/alert-128-red.png \
     images/alert-multi-size-orange.ico \
     images/alert-multi-size-red.ico \
+    images/alerts.jpg \
+    images/alerts.png \
     images/android-icon-144x144.png \
     images/android-icon-192x192.png \
     images/android-icon-36x36.png \
@@ -82,12 +84,14 @@ dist_webimages_DATA = \
     images/banner-icon-144x144.png \
     images/check-mark-2-128-green.png \
     images/check-mark-2-multi-size-green.ico \
+    images/dashboards.png \
     images/favicon-128.png \
     images/favicon-16x16.png \
     images/favicon-196x196.png \
     images/favicon-32x32.png \
     images/favicon-96x96.png \
     images/favicon.ico \
+    images/home.png \
     images/ms-icon-144x144.png \
     images/ms-icon-150x150.png \
     images/ms-icon-310x150.png \
@@ -96,8 +100,12 @@ dist_webimages_DATA = \
     images/ms-icon-70x70.png \
     images/netdata-logomark.svg \
     images/netdata.svg \
+    images/nodeView.png \
+    images/nodes.jpg \
+    images/overview.png \
     images/packaging-beta-tag.svg \
     images/post.png \
+    images/pricing.png \
     images/seo-performance-128.png \
     $(NULL)
 
@@ -131,37 +139,37 @@ dist_webstaticcss_DATA = \
     static/css/2.20fd0a40.chunk.css.map \
     static/css/4.a36e3b73.chunk.css \
     static/css/4.a36e3b73.chunk.css.map \
-    static/css/main.a46a34fa.chunk.css \
-    static/css/main.a46a34fa.chunk.css.map \
+    static/css/main.53ba10f1.chunk.css \
+    static/css/main.53ba10f1.chunk.css.map \
     $(NULL)
 
 webstaticjsdir=$(webdir)/static/js
 dist_webstaticjs_DATA = \
-    static/js/10.0ab42002.chunk.js \
-    static/js/10.0ab42002.chunk.js.map \
-    static/js/2.806d12e9.chunk.js \
-    static/js/2.806d12e9.chunk.js.LICENSE \
-    static/js/2.806d12e9.chunk.js.map \
-    static/js/3.526d52fa.chunk.js \
-    static/js/3.526d52fa.chunk.js.map \
-    static/js/4.afb76ad5.chunk.js \
-    static/js/4.afb76ad5.chunk.js.map \
-    static/js/5.c76b5fed.chunk.js \
-    static/js/5.c76b5fed.chunk.js.LICENSE \
-    static/js/5.c76b5fed.chunk.js.map \
-    static/js/6.b58a11c2.chunk.js \
-    static/js/6.b58a11c2.chunk.js.map \
-    static/js/7.6b3eecd4.chunk.js \
-    static/js/7.6b3eecd4.chunk.js.map \
-    static/js/8.f438a1b5.chunk.js \
-    static/js/8.f438a1b5.chunk.js.map \
-    static/js/9.de55da4d.chunk.js \
-    static/js/9.de55da4d.chunk.js.map \
-    static/js/main.e9164e96.chunk.js \
-    static/js/main.e9164e96.chunk.js.LICENSE \
-    static/js/main.e9164e96.chunk.js.map \
-    static/js/runtime-main.14b48fe3.js \
-    static/js/runtime-main.14b48fe3.js.map \
+    static/js/10.44d9d40b.chunk.js \
+    static/js/10.44d9d40b.chunk.js.map \
+    static/js/2.3123f37d.chunk.js \
+    static/js/2.3123f37d.chunk.js.LICENSE \
+    static/js/2.3123f37d.chunk.js.map \
+    static/js/3.d49f0857.chunk.js \
+    static/js/3.d49f0857.chunk.js.map \
+    static/js/4.8b70c754.chunk.js \
+    static/js/4.8b70c754.chunk.js.map \
+    static/js/5.29dab1cd.chunk.js \
+    static/js/5.29dab1cd.chunk.js.LICENSE \
+    static/js/5.29dab1cd.chunk.js.map \
+    static/js/6.7b15cdf3.chunk.js \
+    static/js/6.7b15cdf3.chunk.js.map \
+    static/js/7.cf6bc66f.chunk.js \
+    static/js/7.cf6bc66f.chunk.js.map \
+    static/js/8.b1a4b595.chunk.js \
+    static/js/8.b1a4b595.chunk.js.map \
+    static/js/9.50358509.chunk.js \
+    static/js/9.50358509.chunk.js.map \
+    static/js/main.cc0e57d1.chunk.js \
+    static/js/main.cc0e57d1.chunk.js.LICENSE \
+    static/js/main.cc0e57d1.chunk.js.map \
+    static/js/runtime-main.b352aa47.js \
+    static/js/runtime-main.b352aa47.js.map \
     $(NULL)
 
 webstaticmediadir=$(webdir)/static/media

@@ -35,7 +35,7 @@ extern void health_init(void);
 
 extern void health_reload(void);
 
-extern int health_variable_lookup(const char *variable, uint32_t hash, RRDCALC *rc, calculated_number *result);
+extern int health_variable_lookup(const char *variable, uint32_t hash, RRDCALC *rc, NETDATA_DOUBLE *result);
 extern void health_aggregate_alarms(RRDHOST *host, BUFFER *wb, BUFFER* context, RRDCALC_STATUS status);
 extern void health_alarms2json(RRDHOST *host, BUFFER *wb, int all);
 extern void health_alarms_values2json(RRDHOST *host, BUFFER *wb, int all);
@@ -56,6 +56,7 @@ extern ALARM_ENTRY* health_create_alarm_entry(
         time_t when,
         const char *name,
         const char *chart,
+        const char *chart_context,
         const char *family,
         const char *classification,
         const char *component,
@@ -63,8 +64,8 @@ extern ALARM_ENTRY* health_create_alarm_entry(
         const char *exec,
         const char *recipient,
         time_t duration,
-        calculated_number old_value,
-        calculated_number new_value,
+        NETDATA_DOUBLE old_value,
+        NETDATA_DOUBLE new_value,
         RRDCALC_STATUS old_status,
         RRDCALC_STATUS new_status,
         const char *source,
@@ -87,6 +88,7 @@ extern void *health_cmdapi_thread(void *ptr);
 extern void health_label_log_save(RRDHOST *host);
 
 extern char *health_edit_command_from_source(const char *source);
+extern void sql_refresh_hashes(void);
 
 extern SIMPLE_PATTERN *health_pattern_from_foreach(char *s);
 

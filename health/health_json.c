@@ -29,6 +29,7 @@ void health_alarm_entry2json_nolock(BUFFER *wb, ALARM_ENTRY *ae, RRDHOST *host) 
                     "\t\t\"config_hash_id\": \"%s\",\n"
                     "\t\t\"name\": \"%s\",\n"
                     "\t\t\"chart\": \"%s\",\n"
+                    "\t\t\"context\": \"%s\",\n"
                     "\t\t\"family\": \"%s\",\n"
                     "\t\t\"class\": \"%s\",\n"
                     "\t\t\"component\": \"%s\",\n"
@@ -65,6 +66,7 @@ void health_alarm_entry2json_nolock(BUFFER *wb, ALARM_ENTRY *ae, RRDHOST *host) 
                    , config_hash_id
                    , ae->name
                    , ae->chart
+                   , ae->chart_context
                    , ae->family
                    , ae->classification?ae->classification:"Unknown"
                    , ae->component?ae->component:"Unknown"
@@ -165,6 +167,10 @@ static inline void health_rrdcalc_values2json_nolock(RRDHOST *host, BUFFER *wb, 
     buffer_rrd_value(wb, rc->value);
     buffer_strcat(wb, ",\n");
 
+    buffer_strcat(wb, "\t\t\t\"last_updated\":");
+    buffer_sprintf(wb, "%lu", (unsigned long)rc->last_updated);
+    buffer_strcat(wb, ",\n");
+
     buffer_sprintf(wb,
                    "\t\t\t\"status\": \"%s\"\n"
                    , rrdcalc_status2string(rc->status));
@@ -227,6 +233,7 @@ static inline void health_rrdcalc2json_nolock(RRDHOST *host, BUFFER *wb, RRDCALC
                     "\t\t\t\"crit_repeat_every\": \"%u\",\n"
                     "\t\t\t\"value_string\": \"%s\",\n"
                     "\t\t\t\"last_repeat\": \"%lu\",\n"
+                    "\t\t\t\"times_repeat\": %lu,\n"
                    , rc->chart, rc->name
                    , (unsigned long)rc->id
                    , hash_id
@@ -259,6 +266,7 @@ static inline void health_rrdcalc2json_nolock(RRDHOST *host, BUFFER *wb, RRDCALC
                    , rc->crit_repeat_every
                    , value_string
                    , (unsigned long)rc->last_repeat
+                   , (unsigned long)rc->times_repeat
     );
 
     if(unlikely(rc->options & RRDCALC_FLAG_NO_CLEAR_NOTIFICATION)) {
@@ -338,6 +346,8 @@ void health_aggregate_alarms(RRDHOST *host, BUFFER *wb, BUFFER* contexts, RRDCAL
             for(rc = host->alarms; rc ; rc = rc->next) {
                 if(unlikely(!rc->rrdset || !rc->rrdset->last_collected_time.tv_sec))
                     continue;
+                if (unlikely(!rrdset_is_available_for_exporting_and_alarms(rc->rrdset)))
+                    continue;
                 if(unlikely(rc->rrdset && rc->rrdset->hash_context == simple_hash(tok)
                             && !strcmp(rc->rrdset->context, tok)
                             && ((status==RRDCALC_STATUS_RAISED)?(rc->status >= RRDCALC_STATUS_WARNING):rc->status == status)))
@@ -349,7 +359,8 @@ void health_aggregate_alarms(RRDHOST *host, BUFFER *wb, BUFFER* contexts, RRDCAL
         for(rc = host->alarms; rc ; rc = rc->next) {
             if(unlikely(!rc->rrdset || !rc->rrdset->last_collected_time.tv_sec))
                 continue;
-
+            if (unlikely(!rrdset_is_available_for_exporting_and_alarms(rc->rrdset)))
+                continue;
             if(unlikely((status==RRDCALC_STATUS_RAISED)?(rc->status >= RRDCALC_STATUS_WARNING):rc->status == status))
                 numberOfAlarms++;
         }

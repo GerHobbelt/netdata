@@ -25,9 +25,6 @@ and other operating systems and is regularly tested. You can find this tool [her
 -   **Alpine** Linux and its derivatives
     -   You have to install `bash` yourself, before using the installer.
 
--   **Arch** Linux and its derivatives
-    -   You need arch/aur for package Judy.
-
 -   **Gentoo** Linux and its derivatives
 
 -   **Debian** Linux and its derivatives (including **Ubuntu**, **Mint**)
@@ -67,16 +64,16 @@ This is how to do it by hand:
 
 ```sh
 # Debian / Ubuntu
-apt-get install zlib1g-dev uuid-dev libuv1-dev liblz4-dev libjudy-dev libssl-dev libelf-dev libmnl-dev libprotobuf-dev protobuf-compiler gcc g++ make git autoconf autoconf-archive autogen automake pkg-config curl python cmake
+apt-get install zlib1g-dev uuid-dev libuv1-dev liblz4-dev libssl-dev libelf-dev libmnl-dev libprotobuf-dev protobuf-compiler gcc g++ make git autoconf autoconf-archive autogen automake pkg-config curl python cmake
 
 # Fedora
-dnf install zlib-devel libuuid-devel libuv-devel lz4-devel Judy-devel openssl-devel elfutils-libelf-devel libmnl-devel protobuf-devel protobuf-compiler gcc gcc-c++ make git autoconf autoconf-archive autogen automake pkgconfig curl findutils python cmake
+dnf install zlib-devel libuuid-devel libuv-devel lz4-devel openssl-devel elfutils-libelf-devel libmnl-devel protobuf-devel protobuf-compiler gcc gcc-c++ make git autoconf autoconf-archive autogen automake pkgconfig curl findutils python cmake
 
 # CentOS / Red Hat Enterprise Linux
-yum install autoconf automake curl gcc gcc-c++ git libmnl-devel libuuid-devel openssl-devel libuv-devel lz4-devel Judy-devel elfutils-libelf-devel protobuf protobuf-devel protobuf-compiler make nc pkgconfig python zlib-devel cmake
+yum install autoconf automake curl gcc gcc-c++ git libmnl-devel libuuid-devel openssl-devel libuv-devel lz4-devel elfutils-libelf-devel protobuf protobuf-devel protobuf-compiler make nc pkgconfig python zlib-devel cmake
 
 # openSUSE
-zypper install zlib-devel libuuid-devel libuv-devel liblz4-devel judy-devel libopenssl-devel libelf-devel libmnl-devel protobuf-devel gcc gcc-c++ make git autoconf autoconf-archive autogen automake pkgconfig curl findutils python cmake
+zypper install zlib-devel libuuid-devel libuv-devel liblz4-devel libopenssl-devel libelf-devel libmnl-devel protobuf-devel gcc gcc-c++ make git autoconf autoconf-archive autogen automake pkgconfig curl findutils python cmake
 ```
 
 Once Netdata is compiled, to run it the following packages are required (already installed using the above commands):
@@ -117,7 +114,6 @@ Netdata DB engine can be enabled when these are installed (they are optional):
 | package  | description|
 |:-----:|-----------|
 | `liblz4` | Extremely fast compression algorithm, version r129 or greater|
-| `Judy`   | General purpose dynamic array|
 | `openssl`| Cryptography and SSL/TLS toolkit|
 
 *Netdata will greatly benefit if you have the above packages installed, but it will still work without them.*
@@ -175,8 +171,6 @@ yum install -y http://repo.okay.com.mx/centos/8/x86_64/release/okay-release-1-3.
 # Install Devel Packages
 yum install autoconf automake curl gcc git cmake libuuid-devel openssl-devel libuv-devel lz4-devel make nc pkgconfig python3 zlib-devel
 
-# Install Judy-Devel directly
-yum install -y http://mirror.centos.org/centos/8/PowerTools/x86_64/os/Packages/Judy-devel-1.0.5-18.module_el8.1.0+217+4d875839.x86_64.rpm
 ```
 
 ## Install Netdata
@@ -220,8 +214,7 @@ cd netdata
 
 ### Connect node to Netdata Cloud during installation
 
-Unlike the [`kickstart.sh`](/packaging/installer/methods/kickstart.md) or
-[`kickstart-static64.sh`](/packaging/installer/methods/kickstart-64.md) methods, the `netdata-installer.sh` script does
+Unlike the [`kickstart.sh`](/packaging/installer/methods/kickstart.md), the `netdata-installer.sh` script does
 not allow you to automatically [connect](/claim/README.md) your node to Netdata Cloud immediately after installation.
 
 See the [connect to cloud](/claim/README.md) doc for details on connecting a node with a manual installation of Netdata.
@@ -245,4 +238,4 @@ Read through Netdata's [documentation](https://learn.netdata.cloud/docs), which 
 solutions, to enable features like health monitoring, alarm notifications, long-term metrics storage, exporting to
 external databases, and more.
 
-[![analytics](https://www.google-analytics.com/collect?v=1&aip=1&t=pageview&_s=1&ds=github&dr=https%3A%2F%2Fgithub.com%2Fnetdata%2Fnetdata&dl=https%3A%2F%2Fmy-netdata.io%2Fgithub%2Fpackaging%2Finstaller%2Fmethods%2Fmanual&_u=MAC~&cid=5792dfd7-8dc4-476b-af31-da2fdb9f93d2&tid=UA-64295674-3)](<>)
+

@@ -7,9 +7,9 @@
 cd "${NETDATA_SOURCE_PATH}" || exit 1
 
 if [ "${NETDATA_BUILD_WITH_DEBUG}" -eq 0 ]; then
-  export CFLAGS="-static -O3 -I/openssl-static/include"
+  export CFLAGS="-static -O2 -I/openssl-static/include -pipe"
 else
-  export CFLAGS="-static -O1 -ggdb3 -Wall -Wextra -Wformat-signedness -fstack-protector-all -D_FORTIFY_SOURCE=2 -DNETDATA_INTERNAL_CHECKS=1 -I/openssl-static/include"
+  export CFLAGS="-static -O1 -pipe -ggdb3 -Wall -Wextra -Wformat-signedness -fstack-protector-all -D_FORTIFY_SOURCE=2 -DNETDATA_INTERNAL_CHECKS=1 -I/openssl-static/include"
 fi
 
 export LDFLAGS="-static -L/openssl-static/lib"
@@ -31,9 +31,10 @@ run ./netdata-installer.sh \
   --dont-wait \
   --dont-start-it \
   --use-system-protobuf \
+  --dont-scrub-cflags-even-though-it-may-break-things \
+  --one-time-build \
   --disable-cloud \
   --disable-telemetry \
-  --dont-scrub-cflags-even-though-it-may-break-things
 
 # shellcheck disable=SC2015
 [ "${GITHUB_ACTIONS}" = "true" ] && echo "::group::Finishing netdata install" || true
@@ -52,12 +53,6 @@ if run readelf -l "${NETDATA_INSTALL_PATH}"/bin/netdata | grep 'INTERP'; then
   printf >&2 "Ooops. %s is not a statically linked binary!\n" "${NETDATA_INSTALL_PATH}"/bin/netdata
   ldd "${NETDATA_INSTALL_PATH}"/bin/netdata
   exit 1
-fi
-
-if [ "${NETDATA_BUILD_WITH_DEBUG}" -eq 0 ]; then
-  run strip "${NETDATA_INSTALL_PATH}"/bin/netdata
-  run strip "${NETDATA_INSTALL_PATH}"/usr/libexec/netdata/plugins.d/apps.plugin
-  run strip "${NETDATA_INSTALL_PATH}"/usr/libexec/netdata/plugins.d/cgroup-network
 fi
 
 # shellcheck disable=SC2015

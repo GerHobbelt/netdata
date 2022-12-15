@@ -41,7 +41,7 @@ struct config stream_config = {
 
 unsigned int default_rrdpush_enabled = 0;
 #ifdef ENABLE_COMPRESSION
-unsigned int default_compression_enabled = 0;
+unsigned int default_compression_enabled = 1;
 #endif
 char *default_rrdpush_destination = NULL;
 char *default_rrdpush_api_key = NULL;
@@ -75,7 +75,8 @@ int rrdpush_init() {
     default_rrdpush_destination = appconfig_get(&stream_config, CONFIG_SECTION_STREAM, "destination", "");
     default_rrdpush_api_key     = appconfig_get(&stream_config, CONFIG_SECTION_STREAM, "api key", "");
     default_rrdpush_send_charts_matching      = appconfig_get(&stream_config, CONFIG_SECTION_STREAM, "send charts matching", "*");
-    rrdhost_free_orphan_time    = config_get_number(CONFIG_SECTION_GLOBAL, "cleanup orphan hosts after seconds", rrdhost_free_orphan_time);
+    rrdhost_free_orphan_time    = config_get_number(CONFIG_SECTION_DB, "cleanup orphan hosts after secs", rrdhost_free_orphan_time);
+
 #ifdef ENABLE_COMPRESSION
     default_compression_enabled = (unsigned int)appconfig_get_boolean(&stream_config, CONFIG_SECTION_STREAM,
         "enable compression", default_compression_enabled);
@@ -97,10 +98,10 @@ int rrdpush_init() {
         }
     }
 
-    char *invalid_certificate = appconfig_get(&stream_config, CONFIG_SECTION_STREAM, "ssl skip certificate verification", "no");
+    bool invalid_certificate = appconfig_get_boolean(&stream_config, CONFIG_SECTION_STREAM, "ssl skip certificate verification", CONFIG_BOOLEAN_NO);
 
-    if ( !strcmp(invalid_certificate,"yes")){
-        if (netdata_validate_server == NETDATA_SSL_VALID_CERTIFICATE){
+    if(invalid_certificate == CONFIG_BOOLEAN_YES){
+        if(netdata_validate_server == NETDATA_SSL_VALID_CERTIFICATE){
             info("Netdata is configured to accept invalid SSL certificate.");
             netdata_validate_server = NETDATA_SSL_INVALID_CERTIFICATE;
         }
@@ -129,11 +130,14 @@ unsigned int remote_clock_resync_iterations = 60;
 
 
 static inline int should_send_chart_matching(RRDSET *st) {
-    if(unlikely(!rrdset_flag_check(st, RRDSET_FLAG_ENABLED))) {
-        rrdset_flag_clear(st, RRDSET_FLAG_UPSTREAM_SEND);
-        rrdset_flag_set(st, RRDSET_FLAG_UPSTREAM_IGNORE);
-    }
-    else if(!rrdset_flag_check(st, RRDSET_FLAG_UPSTREAM_SEND|RRDSET_FLAG_UPSTREAM_IGNORE)) {
+    // Do not stream anomaly rates charts.
+    if (unlikely(st->state->is_ar_chart))
+        return false;
+
+    if (rrdset_flag_check(st, RRDSET_FLAG_ANOMALY_DETECTION))
+        return ml_streaming_enabled();
+
+    if(!rrdset_flag_check(st, RRDSET_FLAG_UPSTREAM_SEND|RRDSET_FLAG_UPSTREAM_IGNORE)) {
         RRDHOST *host = st->rrdhost;
 
         if(simple_pattern_matches(host->rrdpush_send_charts_matching, st->id) ||
@@ -190,20 +194,15 @@ static inline int need_to_send_chart_definition(RRDSET *st) {
 }
 
 // chart labels
+static int send_clabels_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
+    BUFFER *wb = (BUFFER *)data;
+    buffer_sprintf(wb, "CLABEL \"%s\" \"%s\" %d\n", name, value, ls);
+    return 1;
+}
 void rrdpush_send_clabels(RRDHOST *host, RRDSET *st) {
-    struct label_index *labels_c = &st->state->labels;
-    if (labels_c) {
-        netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-        struct label *lbl = labels_c->head;
-        while(lbl) {
-            buffer_sprintf(host->sender->build,
-                           "CLABEL \"%s\" \"%s\" %d\n", lbl->key, lbl->value, (int)lbl->label_source);
-
-            lbl = lbl->next;
-        }
-        if (labels_c->head)
+    if (st->state && st->state->chart_labels) {
+        if(rrdlabels_walkthrough_read(st->state->chart_labels, send_clabels_callback, host->sender->build) > 0)
             buffer_sprintf(host->sender->build,"CLABEL_COMMIT\n");
-        netdata_rwlock_unlock(&host->labels.labels_rwlock);
     }
 }
 
@@ -274,11 +273,11 @@ static inline void rrdpush_send_chart_definition_nolock(RRDSET *st) {
     RRDSETVAR *rs;
     for(rs = st->variables; rs ;rs = rs->next) {
         if(unlikely(rs->type == RRDVAR_TYPE_CALCULATED && rs->options & RRDVAR_OPTION_CUSTOM_CHART_VAR)) {
-            calculated_number *value = (calculated_number *) rs->value;
+            NETDATA_DOUBLE *value = (NETDATA_DOUBLE *) rs->value;
 
             buffer_sprintf(
                     host->sender->build
-                    , "VARIABLE CHART %s = " CALCULATED_NUMBER_FORMAT "\n"
+                    , "VARIABLE CHART %s = " NETDATA_DOUBLE_FORMAT "\n"
                     , rs->variable
                     , *value
             );
@@ -335,7 +334,7 @@ void rrdset_done_push(RRDSET *st) {
         rrdpush_sender_thread_spawn(host);
 
     // Handle non-connected case
-    if(unlikely(!host->rrdpush_sender_connected)) {
+    if(unlikely(!__atomic_load_n(&host->rrdpush_sender_connected, __ATOMIC_SEQ_CST))) {
         if(unlikely(!host->rrdpush_sender_error_shown))
             error("STREAM %s [send]: not ready - discarding collected metrics.", host->hostname);
         host->rrdpush_sender_error_shown = 1;
@@ -361,41 +360,30 @@ void rrdset_done_push(RRDSET *st) {
 }
 
 // labels
+static int send_labels_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
+    BUFFER *wb = (BUFFER *)data;
+    buffer_sprintf(wb, "LABEL \"%s\" = %d \"%s\"\n", name, ls, value);
+    return 1;
+}
 void rrdpush_send_labels(RRDHOST *host) {
-    if (!host->labels.head || !(host->labels.labels_flag & LABEL_FLAG_UPDATE_STREAM) || (host->labels.labels_flag & LABEL_FLAG_STOP_STREAM))
+    if (!host->host_labels || !rrdhost_flag_check(host, RRDHOST_FLAG_STREAM_LABELS_UPDATE) || (rrdhost_flag_check(host, RRDHOST_FLAG_STREAM_LABELS_STOP)))
         return;
 
     sender_start(host->sender);
-    rrdhost_rdlock(host);
-    netdata_rwlock_rdlock(&host->labels.labels_rwlock);
 
-    struct label *label_i = host->labels.head;
-    while(label_i) {
-        buffer_sprintf(host->sender->build
-                , "LABEL \"%s\" = %d %s\n"
-                , label_i->key
-                , (int)label_i->label_source
-                , label_i->value);
-
-        label_i = label_i->next;
-    }
-
-    buffer_sprintf(host->sender->build
-            , "OVERWRITE %s\n", "labels");
-
-    netdata_rwlock_unlock(&host->labels.labels_rwlock);
-    rrdhost_unlock(host);
+    rrdlabels_walkthrough_read(host->host_labels, send_labels_callback, host->sender->build);
+    buffer_sprintf(host->sender->build, "OVERWRITE %s\n", "labels");
     sender_commit(host->sender);
 
     if(host->rrdpush_sender_pipe[PIPE_WRITE] != -1 && write(host->rrdpush_sender_pipe[PIPE_WRITE], " ", 1) == -1)
         error("STREAM %s [send]: cannot write to internal pipe", host->hostname);
 
-    host->labels.labels_flag &= ~LABEL_FLAG_UPDATE_STREAM;
+    rrdhost_flag_clear(host, RRDHOST_FLAG_STREAM_LABELS_UPDATE);
 }
 
 void rrdpush_claimed_id(RRDHOST *host)
 {
-    if(unlikely(!host->rrdpush_send_enabled || !host->rrdpush_sender_connected))
+    if(unlikely(!host->rrdpush_send_enabled || !__atomic_load_n(&host->rrdpush_sender_connected, __ATOMIC_SEQ_CST)))
         return;
     
     if(host->sender->version < STREAM_VERSION_CLAIM)
@@ -414,12 +402,95 @@ void rrdpush_claimed_id(RRDHOST *host)
         error("STREAM %s [send]: cannot write to internal pipe", host->hostname);
 }
 
+int connect_to_one_of_destinations(
+    struct rrdpush_destinations *destinations,
+    int default_port,
+    struct timeval *timeout,
+    size_t *reconnects_counter,
+    char *connected_to,
+    size_t connected_to_size,
+    struct rrdpush_destinations **destination)
+{
+    int sock = -1;
+
+    for (struct rrdpush_destinations *d = destinations; d; d = d->next) {
+        if (d->disabled_no_proper_reply) {
+            d->disabled_no_proper_reply = 0;
+            continue;
+        } else if (d->disabled_because_of_localhost) {
+            continue;
+        } else if (d->disabled_already_streaming && (d->disabled_already_streaming + 30 > now_realtime_sec())) {
+            continue;
+        } else if (d->disabled_because_of_denied_access) {
+            d->disabled_because_of_denied_access = 0;
+            continue;
+        }
+
+        if (reconnects_counter)
+            *reconnects_counter += 1;
+        sock = connect_to_this(d->destination, default_port, timeout);
+        if (sock != -1) {
+            if (connected_to && connected_to_size) {
+                strncpy(connected_to, d->destination, connected_to_size);
+                connected_to[connected_to_size - 1] = '\0';
+            }
+            *destination = d;
+            break;
+        }
+    }
+
+    return sock;
+}
+
+struct rrdpush_destinations *destinations_init(const char *dests) {
+    const char *s = dests;
+    struct rrdpush_destinations *destinations = NULL, *prev = NULL;
+    while(*s) {
+        const char *e = s;
+
+        // skip path, moving both s(tart) and e(nd)
+        if(*e == '/')
+            while(!isspace(*e) && *e != ',') s = ++e;
+
+        // skip separators, moving both s(tart) and e(nd)
+        while(isspace(*e) || *e == ',') s = ++e;
+
+        // move e(nd) to the first separator
+        while(*e && !isspace(*e) && *e != ',' && *e != '/') e++;
+
+        // is there anything?
+        if(!*s || s == e) break;
+
+        char buf[e - s + 1];
+        strncpyz(buf, s, e - s);
+        struct rrdpush_destinations *d = callocz(1, sizeof(struct rrdpush_destinations));
+        strncpyz(d->destination, buf, sizeof(d->destination)-1);
+        d->disabled_no_proper_reply = 0;
+        d->disabled_because_of_localhost = 0;
+        d->disabled_already_streaming = 0;
+        d->disabled_because_of_denied_access = 0;
+        d->next = NULL;
+        if (!destinations) {
+            destinations = d;
+        } else {
+            prev->next = d;
+        }
+        prev = d;
+
+        s = e;
+    }
+    return destinations;
+}
+
 // ----------------------------------------------------------------------------
 // rrdpush sender thread
 
 // Either the receiver lost the connection or the host is being destroyed.
 // The sender mutex guards thread creation, any spurious data is wiped on reconnection.
 void rrdpush_sender_thread_stop(RRDHOST *host) {
+
+    if (!host->sender)
+        return;
 
     netdata_mutex_lock(&host->sender->mutex);
     netdata_thread_t thr = 0;
@@ -532,6 +603,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *url) {
             system_info->ml_capable = strtoul(value, NULL, 0);
         else if(!strcmp(name, "ml_enabled"))
             system_info->ml_enabled = strtoul(value, NULL, 0);
+        else if(!strcmp(name, "mc_version"))
+            system_info->mc_version = strtoul(value, NULL, 0);
         else if(!strcmp(name, "tags"))
             tags = value;
         else if(!strcmp(name, "ver"))

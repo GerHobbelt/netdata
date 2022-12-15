@@ -6,6 +6,8 @@
 #include "aclk_query_queue.h"
 #include "aclk.h"
 
+#include "schema-wrappers/proto_2_json.h"
+
 #define ACLK_V2_PAYLOAD_SEPARATOR "\x0D\x0A\x0D\x0A"
 #define ACLK_CLOUD_REQ_V2_PREFIX "GET /"
 
@@ -17,6 +19,7 @@ struct aclk_request {
     char *callback_topic;
     char *payload;
     int version;
+    int timeout;
     int min_version;
     int max_version;
 };
@@ -54,15 +57,19 @@ static int cloud_to_agent_parse(JSON_ENTRY *e)
             break;
         case JSON_NUMBER:
             if (!strcmp(e->name, "version")) {
-                data->version = e->data.number;
+                data->version = (int)e->data.number;
+                break;
+            }
+            if (!strcmp(e->name, "timeout")) {
+                data->timeout = (int)e->data.number;
                 break;
             }
             if (!strcmp(e->name, "min-version")) {
-                data->min_version = e->data.number;
+                data->min_version = (int)e->data.number;
                 break;
             }
             if (!strcmp(e->name, "max-version")) {
-                data->max_version = e->data.number;
+                data->max_version = (int)e->data.number;
                 break;
             }
 
@@ -111,20 +118,8 @@ static inline int aclk_v2_payload_get_query(const char *payload, char **query_ur
     return 0;
 }
 
-#define HTTP_CHECK_AGENT_INITIALIZED() ACLK_SHARED_STATE_LOCK;\
-    if (unlikely(aclk_shared_state.agent_state == ACLK_HOST_INITIALIZING)) {\
-        debug(D_ACLK, "Ignoring \"http\" cloud request; agent not in stable state");\
-        ACLK_SHARED_STATE_UNLOCK;\
-        return 1;\
-    }\
-    ACLK_SHARED_STATE_UNLOCK;
-
 static int aclk_handle_cloud_http_request_v2(struct aclk_request *cloud_to_agent, char *raw_payload)
 {
-    if (!aclk_use_new_cloud_arch) {
-        HTTP_CHECK_AGENT_INITIALIZED();
-    }
-
     aclk_query_t query;
 
     errno = 0;
@@ -160,6 +155,7 @@ static int aclk_handle_cloud_http_request_v2(struct aclk_request *cloud_to_agent
 
     // aclk_queue_query takes ownership of data pointer
     query->callback_topic = cloud_to_agent->callback_topic;
+    query->timeout = cloud_to_agent->timeout;
     // for clarity and code readability as when we process the request
     // it would be strange to get URL from `dedup_id`
     query->data.http_api_v2.query = query->dedup_id;
@@ -223,7 +219,6 @@ err_cleanup:
     return 1;
 }
 
-#ifdef ENABLE_NEW_CLOUD_PROTOCOL
 typedef uint32_t simple_hash_t;
 typedef int(*rx_msg_handler)(const char *msg, size_t msg_len);
 
@@ -271,32 +266,48 @@ int create_node_instance_result(const char *msg, size_t msg_len)
     update_node_id(&host_id, &node_id);
 
     aclk_query_t query = aclk_query_new(NODE_STATE_UPDATE);
-    query->data.node_update.hops = 1; //TODO - real hop count instead of hardcoded
-    rrdhost_aclk_state_lock(localhost);
-    query->data.node_update.claim_id = strdupz(localhost->aclk_state.claimed_id);
-    rrdhost_aclk_state_unlock(localhost);
+    node_instance_connection_t node_state_update = {
+        .hops = 1,
+        .live = 0,
+        .queryable = 1,
+        .session_id = aclk_session_newarch,
+        .node_id = res.node_id
+    };
 
     RRDHOST *host = rrdhost_find_by_guid(res.machine_guid, 0);
-    query->data.node_update.live = 0;
-
     if (host) {
         // not all host must have RRDHOST struct created for them
         // if they never connected during runtime of agent
         if (host == localhost) {
-            query->data.node_update.live = 1;
-            query->data.node_update.hops = 0;
+            node_state_update.live = 1;
+            node_state_update.hops = 0;
         } else {
             netdata_mutex_lock(&host->receiver_lock);
-            query->data.node_update.live = (host->receiver != NULL);
+            node_state_update.live = (host->receiver != NULL);
             netdata_mutex_unlock(&host->receiver_lock);
-            query->data.node_update.hops = host->system_info->hops;
+            node_state_update.hops = host->system_info->hops;
         }
     }
 
-    query->data.node_update.node_id = res.node_id; // aclk_query_free will free it
-    query->data.node_update.queryable = 1;
-    query->data.node_update.session_id = aclk_session_newarch;
+    struct capability caps[] = {
+        { .name = "proto", .version = 1,                     .enabled = 1 },
+        { .name = "ml",    .version = ml_capable(localhost), .enabled = host ? ml_enabled(host) : 0 },
+        { .name = "mc",    .version = enable_metric_correlations ? metric_correlations_version : 0, .enabled = enable_metric_correlations },
+        { .name = "ctx",   .version = 1,                     .enabled = rrdcontext_enabled },
+        { .name = NULL,    .version = 0,                     .enabled = 0 }
+    };
+    node_state_update.capabilities = caps;
+
+    rrdhost_aclk_state_lock(localhost);
+    node_state_update.claim_id = localhost->aclk_state.claimed_id;
+    query->data.bin_payload.payload = generate_node_instance_connection(&query->data.bin_payload.size, &node_state_update);
+    rrdhost_aclk_state_unlock(localhost);
+
+    query->data.bin_payload.msg_name = "UpdateNodeInstanceConnection";
+    query->data.bin_payload.topic = ACLK_TOPICID_NODE_CONN;
+
     aclk_queue_query(query);
+    freez(res.node_id);
     freez(res.machine_guid);
     return 0;
 }
@@ -311,6 +322,7 @@ int send_node_instances(const char *msg, size_t msg_len)
 
 int stream_charts_and_dimensions(const char *msg, size_t msg_len)
 {
+    aclk_ctx_based = 0;
     stream_charts_and_dims_t res = parse_stream_charts_and_dims(msg, msg_len);
     if (!res.claim_id || !res.node_id) {
         error("Error parsing StreamChartsAndDimensions msg");
@@ -424,6 +436,41 @@ int handle_disconnect_req(const char *msg, size_t msg_len)
     return 0;
 }
 
+int contexts_checkpoint(const char *msg, size_t msg_len)
+{
+    aclk_ctx_based = 1;
+
+    struct ctxs_checkpoint *cmd = parse_ctxs_checkpoint(msg, msg_len);
+    if (!cmd)
+        return 1;
+
+    rrdcontext_hub_checkpoint_command(cmd);
+
+    freez(cmd->claim_id);
+    freez(cmd->node_id);
+    freez(cmd);
+    return 0;
+}
+
+int stop_streaming_contexts(const char *msg, size_t msg_len)
+{
+    if (!aclk_ctx_based) {
+        error_report("Received StopStreamingContexts message but context based communication was not enabled  (Cloud violated the protocol). Ignoring message");
+        return 1;
+    }
+
+    struct stop_streaming_ctxs *cmd = parse_stop_streaming_ctxs(msg, msg_len);
+    if (!cmd)
+        return 1;
+
+    rrdcontext_hub_stop_streaming_command(cmd);
+
+    freez(cmd->claim_id);
+    freez(cmd->node_id);
+    freez(cmd);
+    return 0;
+}
+
 typedef struct {
     const char *name;
     simple_hash_t name_hash;
@@ -442,6 +489,8 @@ new_cloud_rx_msg_t rx_msgs[] = {
     { .name = "SendAlarmConfiguration",    .name_hash = 0, .fnc = send_alarm_configuration     },
     { .name = "SendAlarmSnapshot",         .name_hash = 0, .fnc = send_alarm_snapshot          },
     { .name = "DisconnectReq",             .name_hash = 0, .fnc = handle_disconnect_req        },
+    { .name = "ContextsCheckpoint",        .name_hash = 0, .fnc = contexts_checkpoint          },
+    { .name = "StopStreamingContexts",     .name_hash = 0, .fnc = stop_streaming_contexts      },
     { .name = NULL,                        .name_hash = 0, .fnc = NULL                         },
 };
 
@@ -457,9 +506,15 @@ new_cloud_rx_msg_t *find_rx_handler_by_hash(simple_hash_t hash)
     return NULL;
 }
 
-void aclk_init_rx_msg_handlers(void)
+const char *rx_handler_get_name(size_t i)
 {
-    for (int i = 0; rx_msgs[i].fnc; i++) {
+    return rx_msgs[i].name;
+}
+
+unsigned int aclk_init_rx_msg_handlers(void)
+{
+    int i;
+    for (i = 0; rx_msgs[i].fnc; i++) {
         simple_hash_t hash = simple_hash(rx_msgs[i].name);
         new_cloud_rx_msg_t *hdl = find_rx_handler_by_hash(hash);
         if (unlikely(hdl)) {
@@ -469,9 +524,10 @@ void aclk_init_rx_msg_handlers(void)
         }
         rx_msgs[i].name_hash = hash;
     }
+    return i;
 }
 
-void aclk_handle_new_cloud_msg(const char *message_type, const char *msg, size_t msg_len)
+void aclk_handle_new_cloud_msg(const char *message_type, const char *msg, size_t msg_len, const char *topic)
 {
     if (aclk_stats_enabled) {
         ACLK_STATS_LOCK;
@@ -489,6 +545,22 @@ void aclk_handle_new_cloud_msg(const char *message_type, const char *msg, size_t
         }
         return;
     }
+
+#ifdef NETDATA_INTERNAL_CHECKS
+    if (!strncmp(message_type, "cmd", strlen("cmd"))) {
+        log_aclk_message_bin(msg, msg_len, 0, topic, msg_descriptor->name);
+    } else {
+        char *json = protomsg_to_json(msg, msg_len, msg_descriptor->name);
+        log_aclk_message_bin(json, strlen(json), 0, topic, msg_descriptor->name);
+        freez(json);
+    }
+#endif
+
+    if (aclk_stats_enabled) {
+        ACLK_STATS_LOCK;
+        aclk_proto_rx_msgs_sample[msg_descriptor-rx_msgs]++;
+        ACLK_STATS_UNLOCK;
+    }
     if (msg_descriptor->fnc(msg, msg_len)) {
         error("Error processing message of type '%s'", message_type);
         if (aclk_stats_enabled) {
@@ -499,4 +571,3 @@ void aclk_handle_new_cloud_msg(const char *message_type, const char *msg, size_t
         return;
     }
 }
-#endif

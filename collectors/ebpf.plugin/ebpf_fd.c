@@ -29,12 +29,9 @@ struct config fd_config = { .first_section = NULL, .last_section = NULL, .mutex 
                            .index = {.avl_tree = { .root = NULL, .compar = appconfig_section_compare },
                                      .rwlock = AVL_LOCK_INITIALIZER } };
 
-static struct bpf_link **probe_links = NULL;
-static struct bpf_object *objects = NULL;
-
 struct netdata_static_thread fd_thread = {"FD KERNEL", NULL, NULL, 1, NULL,
                                           NULL,  NULL};
-static int read_thread_closed = 1;
+static enum ebpf_threads_status ebpf_fd_exited = NETDATA_THREAD_EBPF_RUNNING;
 static netdata_idx_t fd_hash_values[NETDATA_FD_COUNTER];
 static netdata_idx_t *fd_values = NULL;
 
@@ -48,17 +45,21 @@ netdata_fd_stat_t **fd_pid = NULL;
  *****************************************************************/
 
 /**
- * Clean PID structures
+ * FD Exit
  *
- * Clean the allocated structures.
+ * Cancel child thread and exit.
+ *
+ * @param ptr thread data.
  */
-void clean_fd_pid_structures() {
-    struct pid_stat *pids = root_of_pids;
-    while (pids) {
-        freez(fd_pid[pids->pid]);
-
-        pids = pids->next;
+static void ebpf_fd_exit(void *ptr)
+{
+    ebpf_module_t *em = (ebpf_module_t *)ptr;
+    if (!em->enabled) {
+        em->enabled = NETDATA_MAIN_THREAD_EXITED;
+        return;
     }
+
+    ebpf_fd_exited = NETDATA_THREAD_EBPF_STOPPING;
 }
 
 /**
@@ -69,31 +70,16 @@ void clean_fd_pid_structures() {
 static void ebpf_fd_cleanup(void *ptr)
 {
     ebpf_module_t *em = (ebpf_module_t *)ptr;
-    if (!em->enabled)
+    if (ebpf_fd_exited != NETDATA_THREAD_EBPF_STOPPED)
         return;
-
-    heartbeat_t hb;
-    heartbeat_init(&hb);
-    uint32_t tick = 2 * USEC_PER_MS;
-    while (!read_thread_closed) {
-        usec_t dt = heartbeat_next(&hb, tick);
-        UNUSED(dt);
-    }
 
     ebpf_cleanup_publish_syscall(fd_publish_aggregated);
     freez(fd_thread.thread);
     freez(fd_values);
     freez(fd_vector);
 
-    if (probe_links) {
-        struct bpf_program *prog;
-        size_t i = 0 ;
-        bpf_object__for_each_program(prog, objects) {
-            bpf_link__destroy(probe_links[i]);
-            i++;
-        }
-        bpf_object__close(objects);
-    }
+    fd_thread.enabled = NETDATA_MAIN_THREAD_EXITED;
+    em->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
 /*****************************************************************
@@ -161,21 +147,24 @@ static void read_global_table()
  */
 void *ebpf_fd_read_hash(void *ptr)
 {
-    read_thread_closed = 0;
-
+    netdata_thread_cleanup_push(ebpf_fd_cleanup, ptr);
     heartbeat_t hb;
     heartbeat_init(&hb);
 
     ebpf_module_t *em = (ebpf_module_t *)ptr;
     usec_t step = NETDATA_FD_SLEEP_MS * em->update_every;
-    while (!close_ebpf_plugin) {
+    while (ebpf_fd_exited == NETDATA_THREAD_EBPF_RUNNING) {
         usec_t dt = heartbeat_next(&hb, step);
         (void)dt;
+        if (ebpf_fd_exited == NETDATA_THREAD_EBPF_STOPPING)
+            break;
 
         read_global_table();
     }
 
-    read_thread_closed = 1;
+    ebpf_fd_exited = NETDATA_THREAD_EBPF_STOPPED;
+
+    netdata_thread_cleanup_pop(1);
     return NULL;
 }
 
@@ -572,7 +561,7 @@ static int ebpf_send_systemd_fd_charts(ebpf_module_t *em)
     for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, ect->publish_systemd_fd.open_call);
-        } else
+        } else if (unlikely(ect->systemd))
             ret = 0;
     }
     write_end_chart();
@@ -665,38 +654,37 @@ static void fd_collector(ebpf_module_t *em)
     fd_thread.thread = mallocz(sizeof(netdata_thread_t));
     fd_thread.start_routine = ebpf_fd_read_hash;
 
-    netdata_thread_create(fd_thread.thread, fd_thread.name, NETDATA_THREAD_OPTION_JOINABLE,
+    netdata_thread_create(fd_thread.thread, fd_thread.name, NETDATA_THREAD_OPTION_DEFAULT,
                           ebpf_fd_read_hash, em);
 
-    int apps = em->apps_charts;
     int cgroups = em->cgroup_charts;
-    int update_every = em->update_every;
-    int counter = update_every - 1;
-    while (!close_ebpf_plugin) {
+    heartbeat_t hb;
+    heartbeat_init(&hb);
+    usec_t step = em->update_every * USEC_PER_SEC;
+    while (!ebpf_exit_plugin) {
+        (void)heartbeat_next(&hb, step);
+        if (ebpf_exit_plugin)
+            break;
+
+        netdata_apps_integration_flags_t apps = em->apps_charts;
         pthread_mutex_lock(&collect_data_mutex);
-        pthread_cond_wait(&collect_data_cond_var, &collect_data_mutex);
+        if (apps)
+            read_apps_table();
 
-        if (++counter == update_every) {
-            counter = 0;
-            if (apps)
-                read_apps_table();
+        if (cgroups)
+            ebpf_update_fd_cgroup();
 
-            if (cgroups)
-                ebpf_update_fd_cgroup();
+        pthread_mutex_lock(&lock);
 
-            pthread_mutex_lock(&lock);
+        ebpf_fd_send_data(em);
 
-            ebpf_fd_send_data(em);
+        if (apps & NETDATA_EBPF_APPS_FLAG_CHART_CREATED)
+            ebpf_fd_send_apps_data(em, apps_groups_root_target);
 
-            if (apps)
-                ebpf_fd_send_apps_data(em, apps_groups_root_target);
+        if (cgroups)
+            ebpf_fd_send_cgroup_data(em);
 
-            if (cgroups)
-                ebpf_fd_send_cgroup_data(em);
-
-            pthread_mutex_unlock(&lock);
-        }
-
+        pthread_mutex_unlock(&lock);
         pthread_mutex_unlock(&collect_data_mutex);
     }
 }
@@ -756,6 +744,8 @@ void ebpf_fd_create_apps_charts(struct ebpf_module *em, void *ptr)
                                    ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX],
                                    root, em->update_every, NETDATA_EBPF_MODULE_NAME_PROCESS);
     }
+
+    em->apps_charts |= NETDATA_EBPF_APPS_FLAG_CHART_CREATED;
 }
 
 /**
@@ -831,7 +821,7 @@ static void ebpf_fd_allocate_global_vectors(int apps)
  */
 void *ebpf_fd_thread(void *ptr)
 {
-    netdata_thread_cleanup_push(ebpf_fd_cleanup, ptr);
+    netdata_thread_cleanup_push(ebpf_fd_exit, ptr);
 
     ebpf_module_t *em = (ebpf_module_t *)ptr;
     em->maps = fd_maps;
@@ -841,8 +831,8 @@ void *ebpf_fd_thread(void *ptr)
 
     ebpf_fd_allocate_global_vectors(em->apps_charts);
 
-    probe_links = ebpf_load_program(ebpf_plugin_dir, em, running_on_kernel, isrh, &objects);
-    if (!probe_links) {
+    em->probe_links = ebpf_load_program(ebpf_plugin_dir, em, running_on_kernel, isrh, &em->objects);
+    if (!em->probe_links) {
         em->enabled = CONFIG_BOOLEAN_NO;
         goto endfd;
     }

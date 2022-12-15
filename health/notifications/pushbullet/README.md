@@ -14,7 +14,7 @@ And like this on your Android device:
 
 You will need:
 
-1.  Sign up and log in to [pushbullet.com](pushbullet.com)
+1.  Sign up and log in to [pushbullet.com](https://www.pushbullet.com/)
 2.  Create a new access token in your [account settings](https://www.pushbullet.com/#settings/account).
 3.  Fill in the `PUSHBULLET_ACCESS_TOKEN` with the newly generated access token.
 4.  Add the recipient emails or channel tags (each channel tag must be prefixed with #, e.g. #channeltag) to `DEFAULT_RECIPIENT_PUSHBULLET`.
@@ -47,4 +47,4 @@ PUSHBULLET_ACCESS_TOKEN="o.Sometokenhere"
 DEFAULT_RECIPIENT_PUSHBULLET="admin1@example.com admin3@somemail.com #examplechanneltag #anotherchanneltag"
 ```
 
-[![analytics](https://www.google-analytics.com/collect?v=1&aip=1&t=pageview&_s=1&ds=github&dr=https%3A%2F%2Fgithub.com%2Fnetdata%2Fnetdata&dl=https%3A%2F%2Fmy-netdata.io%2Fgithub%2Fhealth%2Fnotifications%2Fpushbullet%2FREADME&_u=MAC~&cid=5792dfd7-8dc4-476b-af31-da2fdb9f93d2&tid=UA-64295674-3)](<>)
+

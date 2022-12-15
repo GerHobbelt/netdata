@@ -15,26 +15,15 @@ extern usec_t aclk_session_us;
 extern time_t aclk_session_sec;
 
 extern int aclk_disable_runtime;
-extern int aclk_disable_single_updates;
 
 extern int aclk_stats_enabled;
 extern int aclk_alert_reloaded;
 
-extern int aclk_ng;
+extern int use_mqtt_5;
+extern int aclk_ctx_based;
 
 #ifdef ENABLE_ACLK
 void *aclk_starter(void *ptr);
-
-void aclk_single_update_disable();
-void aclk_single_update_enable();
-
-void aclk_alarm_reload(void);
-
-int aclk_update_chart(RRDHOST *host, char *chart_name, int create);
-int aclk_update_alarm(RRDHOST *host, ALARM_ENTRY *ae);
-
-void aclk_add_collector(RRDHOST *host, const char *plugin_name, const char *module_name);
-void aclk_del_collector(RRDHOST *host, const char *plugin_name, const char *module_name);
 
 void aclk_host_state_update(RRDHOST *host, int connect);
 
@@ -49,7 +38,7 @@ void aclk_host_state_update(RRDHOST *host, int connect);
 
 #endif
 
-struct label *add_aclk_host_labels(struct label *label);
+void add_aclk_host_labels(void);
 char *aclk_state(void);
 char *aclk_state_json(void);
 

@@ -8,7 +8,7 @@
 /* Health related SQL queries
    Creates a health log table in sqlite, one per host guid
 */
-#define SQL_CREATE_HEALTH_LOG_TABLE(guid) "CREATE TABLE IF NOT EXISTS health_log_%s(hostname text, unique_id int, alarm_id int, alarm_event_id int, config_hash_id blob, updated_by_id int, updates_id int, when_key int, duration int, non_clear_duration int, flags int, exec_run_timestamp int, delay_up_to_timestamp int, name text, chart text, family text, exec text, recipient text, source text, units text, info text, exec_code int, new_status real, old_status real, delay int, new_value double, old_value double, last_repeat int, class text, component text, type text);", guid
+#define SQL_CREATE_HEALTH_LOG_TABLE(guid) "CREATE TABLE IF NOT EXISTS health_log_%s(hostname text, unique_id int, alarm_id int, alarm_event_id int, config_hash_id blob, updated_by_id int, updates_id int, when_key int, duration int, non_clear_duration int, flags int, exec_run_timestamp int, delay_up_to_timestamp int, name text, chart text, family text, exec text, recipient text, source text, units text, info text, exec_code int, new_status real, old_status real, delay int, new_value double, old_value double, last_repeat int, class text, component text, type text, chart_context text);", guid
 int sql_create_health_log_table(RRDHOST *host) {
     int rc;
     char *err_msg = NULL, command[MAX_HEALTH_SQL_SIZE + 1];
@@ -113,7 +113,7 @@ void sql_health_alarm_log_update(RRDHOST *host, ALARM_ENTRY *ae) {
     "config_hash_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, " \
     "exec_run_timestamp, delay_up_to_timestamp, name, chart, family, exec, recipient, source, " \
     "units, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, " \
-    "class, component, type) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);", guid
+    "class, component, type, chart_context) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);", guid
 
 void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
     sqlite3_stmt *res = NULL;
@@ -323,6 +323,12 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
         goto failed;
     }
 
+    rc = sqlite3_bind_text(res, 32, ae->chart_context, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind chart_context parameter for SQL_INSERT_HEALTH_LOG");
+        goto failed;
+    }
+
     rc = execute_insert(res);
     if (unlikely(rc != SQLITE_DONE)) {
         error_report("HEALTH [%s]: Failed to execute SQL_INSERT_HEALTH_LOG, rc = %d", host->hostname, rc);
@@ -433,10 +439,172 @@ void sql_health_alarm_log_count(RRDHOST *host) {
     info("HEALTH [%s]: Table health_log_%s, contains %lu entries.", host->hostname, uuid_str, host->health_log_entries_written);
 }
 
+#define SQL_INJECT_REMOVED(guid, guid2) "insert into health_log_%s (hostname, unique_id, alarm_id, alarm_event_id, config_hash_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, " \
+"delay_up_to_timestamp, name, chart, family, exec, recipient, source, units, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, class, component, type, chart_context) " \
+"select hostname, ?1, ?2, ?3, config_hash_id, 0, ?4, unixepoch(), 0, 0, flags, exec_run_timestamp, " \
+"unixepoch(), name, chart, family, exec, recipient, source, units, info, exec_code, -2, new_status, delay, NULL, new_value, 0, class, component, type, chart_context " \
+"from health_log_%s where unique_id = ?5", guid, guid2
+#define SQL_INJECT_REMOVED_UPDATE(guid) "update health_log_%s set flags = flags | ?1, updated_by_id = ?2 where unique_id = ?3; ", guid
+void sql_inject_removed_status(char *uuid_str, uint32_t alarm_id, uint32_t alarm_event_id, uint32_t unique_id, uint32_t max_unique_id)
+{
+    int rc = 0;
+    char command[MAX_HEALTH_SQL_SIZE + 1];
+
+    if (!alarm_id || !alarm_event_id || !unique_id || !max_unique_id)
+        return;
+
+    sqlite3_stmt *res = NULL;
+
+    snprintfz(command, MAX_HEALTH_SQL_SIZE, SQL_INJECT_REMOVED(uuid_str, uuid_str));
+    rc = sqlite3_prepare_v2(db_meta, command, -1, &res, 0);
+    if (rc != SQLITE_OK) {
+        error_report("Failed to prepare statement when trying to inject removed event");
+        return;
+    }
+
+    rc = sqlite3_bind_int64(res, 1, (sqlite3_int64) max_unique_id);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind max_unique_id parameter for SQL_INJECT_REMOVED");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 2, (sqlite3_int64) alarm_id);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind alarm_id parameter for SQL_INJECT_REMOVED");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 3, (sqlite3_int64) alarm_event_id + 1);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind alarm_event_id parameter for SQL_INJECT_REMOVED");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 4, (sqlite3_int64) unique_id);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind unique_id parameter for SQL_INJECT_REMOVED");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 5, (sqlite3_int64) unique_id);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind unique_id parameter for SQL_INJECT_REMOVED");
+        goto failed;
+    }
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE)) {
+        error_report("HEALTH [N/A]: Failed to execute SQL_INJECT_REMOVED, rc = %d", rc);
+        goto failed;
+    }
+
+    if (unlikely(sqlite3_finalize(res) != SQLITE_OK))
+        error_report("HEALTH [N/A]: Failed to finalize the prepared statement for injecting removed event.");
+
+    //update the old entry
+    snprintfz(command, MAX_HEALTH_SQL_SIZE, SQL_INJECT_REMOVED_UPDATE(uuid_str));
+    rc = sqlite3_prepare_v2(db_meta, command, -1, &res, 0);
+    if (rc != SQLITE_OK) {
+        error_report("Failed to prepare statement when trying to update during inject removed event");
+        return;
+    }
+
+    rc = sqlite3_bind_int64(res, 1, (sqlite3_int64) HEALTH_ENTRY_FLAG_UPDATED);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind flags parameter for SQL_INJECT_REMOVED (update)");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 2, (sqlite3_int64) max_unique_id);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind max_unique_id parameter for SQL_INJECT_REMOVED (update)");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 3, (sqlite3_int64) unique_id);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind unique_id parameter for SQL_INJECT_REMOVED (update)");
+        goto failed;
+    }
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE)) {
+        error_report("HEALTH [N/A]: Failed to execute SQL_INJECT_REMOVED_UPDATE, rc = %d", rc);
+        goto failed;
+    }
+
+failed:
+    if (unlikely(sqlite3_finalize(res) != SQLITE_OK))
+        error_report("HEALTH [N/A]: Failed to finalize the prepared statement for injecting removed event.");
+    return;
+
+}
+
+#define SQL_SELECT_MAX_UNIQUE_ID(guid) "SELECT MAX(unique_id) from health_log_%s", guid
+uint32_t sql_get_max_unique_id (char *uuid_str)
+{
+    int rc = 0;
+    char command[MAX_HEALTH_SQL_SIZE + 1];
+    uint32_t max_unique_id = 0;
+
+    sqlite3_stmt *res = NULL;
+
+    snprintfz(command, MAX_HEALTH_SQL_SIZE, SQL_SELECT_MAX_UNIQUE_ID(uuid_str));
+    rc = sqlite3_prepare_v2(db_meta, command, -1, &res, 0);
+    if (rc != SQLITE_OK) {
+        error_report("Failed to prepare statement when trying to get max unique id");
+        return 0;
+    }
+
+     while (sqlite3_step(res) == SQLITE_ROW) {
+         max_unique_id = (uint32_t) sqlite3_column_int64(res, 0);
+     }
+
+     rc = sqlite3_finalize(res);
+     if (unlikely(rc != SQLITE_OK))
+         error_report("Failed to finalize the statement");
+
+     return max_unique_id;
+}
+
+#define SQL_SELECT_LAST_STATUSES(guid) "SELECT new_status, unique_id, alarm_id, alarm_event_id from health_log_%s group by alarm_id having max(alarm_event_id)", guid
+void sql_check_removed_alerts_state(char *uuid_str)
+{
+    int rc = 0;
+    char command[MAX_HEALTH_SQL_SIZE + 1];
+    RRDCALC_STATUS status;
+    uint32_t alarm_id = 0, alarm_event_id = 0, unique_id = 0, max_unique_id = 0;
+
+    sqlite3_stmt *res = NULL;
+
+    snprintfz(command, MAX_HEALTH_SQL_SIZE, SQL_SELECT_LAST_STATUSES(uuid_str));
+    rc = sqlite3_prepare_v2(db_meta, command, -1, &res, 0);
+    if (rc != SQLITE_OK) {
+        error_report("Failed to prepare statement when trying to check removed statuses");
+        return;
+    }
+
+     while (sqlite3_step(res) == SQLITE_ROW) {
+         status  = (RRDCALC_STATUS) sqlite3_column_int(res, 0);
+         unique_id = (uint32_t) sqlite3_column_int64(res, 1);
+         alarm_id = (uint32_t) sqlite3_column_int64(res, 2);
+         alarm_event_id = (uint32_t) sqlite3_column_int64(res, 3);
+         if (unlikely(status != RRDCALC_STATUS_REMOVED)) {
+             if (unlikely(!max_unique_id))
+                 max_unique_id = sql_get_max_unique_id (uuid_str);
+             sql_inject_removed_status (uuid_str, alarm_id, alarm_event_id, unique_id, ++max_unique_id);
+         }
+     }
+
+     rc = sqlite3_finalize(res);
+     if (unlikely(rc != SQLITE_OK))
+         error_report("Failed to finalize the statement");
+}
+
 /* Health related SQL queries
    Load from the health log table
 */
-#define SQL_LOAD_HEALTH_LOG(guid,limit) "SELECT hostname, unique_id, alarm_id, alarm_event_id, config_hash_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, name, chart, family, exec, recipient, source, units, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, class, component, type FROM (SELECT hostname, unique_id, alarm_id, alarm_event_id, config_hash_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, name, chart, family, exec, recipient, source, units, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, class, component, type FROM health_log_%s order by unique_id desc limit %u) order by unique_id asc;", guid, limit
+#define SQL_LOAD_HEALTH_LOG(guid,limit) "SELECT hostname, unique_id, alarm_id, alarm_event_id, config_hash_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, name, chart, family, exec, recipient, source, units, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, class, component, type, chart_context FROM (SELECT hostname, unique_id, alarm_id, alarm_event_id, config_hash_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, name, chart, family, exec, recipient, source, units, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, class, component, type, chart_context FROM health_log_%s order by unique_id desc limit %u) order by unique_id asc;", guid, limit
 void sql_health_alarm_log_load(RRDHOST *host) {
     sqlite3_stmt *res = NULL;
     int rc;
@@ -453,6 +621,8 @@ void sql_health_alarm_log_load(RRDHOST *host) {
 
     char uuid_str[GUID_LEN + 1];
     uuid_unparse_lower_fix(&host->host_uuid, uuid_str);
+
+    sql_check_removed_alerts_state(uuid_str);
 
     snprintfz(command, MAX_HEALTH_SQL_SIZE, SQL_LOAD_HEALTH_LOG(uuid_str, host->health_log.max));
 
@@ -587,8 +757,8 @@ void sql_health_alarm_log_load(RRDHOST *host) {
         ae->old_status  = (RRDCALC_STATUS)sqlite3_column_int(res, 23);
         ae->delay       = (int) sqlite3_column_int(res, 24);
 
-        ae->new_value   = (calculated_number) sqlite3_column_double(res, 25);
-        ae->old_value   = (calculated_number) sqlite3_column_double(res, 26);
+        ae->new_value   = (NETDATA_DOUBLE) sqlite3_column_double(res, 25);
+        ae->old_value   = (NETDATA_DOUBLE) sqlite3_column_double(res, 26);
 
         ae->last_repeat = last_repeat;
 
@@ -606,6 +776,11 @@ void sql_health_alarm_log_load(RRDHOST *host) {
             ae->type = strdupz((char *) sqlite3_column_text(res, 30));
         else
             ae->type = NULL;
+
+        if (sqlite3_column_type(res, 31) != SQLITE_NULL)
+            ae->chart_context = strdupz((char *) sqlite3_column_text(res, 31));
+        else
+            ae->chart_context = NULL;
 
         char value_string[100 + 1];
         freez(ae->old_value_string);
@@ -650,7 +825,7 @@ void sql_health_alarm_log_load(RRDHOST *host) {
     "on_key, class, component, type, os, hosts, lookup, every, units, calc, families, plugin, module, " \
     "charts, green, red, warn, crit, exec, to_key, info, delay, options, repeat, host_labels, " \
     "p_db_lookup_dimensions, p_db_lookup_method, p_db_lookup_options, p_db_lookup_after, " \
-    "p_db_lookup_before, p_update_every) values (?1,strftime('%s'),?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12," \
+    "p_db_lookup_before, p_update_every) values (?1,unixepoch(),?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12," \
     "?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34);"
 
 int sql_store_alert_config_hash(uuid_t *hash_id, struct alert_config *cfg)
@@ -890,11 +1065,20 @@ int sql_store_alert_config_hash(uuid_t *hash_id, struct alert_config *cfg)
     return 1;
 }
 
+/*
+  alert hashes are used for cloud communication.
+  if cloud is disabled or openssl is not available (which will prevent cloud connectivity)
+  skip hash calculations
+*/
+#if !defined DISABLE_CLOUD && defined ENABLE_HTTPS
 #define DIGEST_ALERT_CONFIG_VAL(v) ((v) ? EVP_DigestUpdate(evpctx, (v), strlen((v))) : EVP_DigestUpdate(evpctx, "", 1))
+#endif
 int alert_hash_and_store_config(
     uuid_t hash_id,
-    struct alert_config *cfg)
+    struct alert_config *cfg,
+    int store_hash)
 {
+#if !defined DISABLE_CLOUD && defined ENABLE_HTTPS
     EVP_MD_CTX *evpctx;
     unsigned char hash_value[EVP_MAX_MD_SIZE];
     unsigned int hash_len;
@@ -938,7 +1122,13 @@ int alert_hash_and_store_config(
     uuid_copy(hash_id, *((uuid_t *)&hash_value));
 
     /* store everything, so it can be recreated when not in memory or just a subset ? */
-    (void)sql_store_alert_config_hash( (uuid_t *)&hash_value, cfg);
+    if (store_hash)
+        (void)sql_store_alert_config_hash( (uuid_t *)&hash_value, cfg);
+#else
+    UNUSED(hash_id);
+    UNUSED(cfg);
+    UNUSED(store_hash);
+#endif
 
     return 1;
 }

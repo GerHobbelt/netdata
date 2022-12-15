@@ -11,15 +11,25 @@ The Agent-Cloud link (ACLK) is the mechanism responsible for securely connecting
 through Netdata Cloud. The ACLK establishes an outgoing secure WebSocket (WSS) connection to Netdata Cloud on port
 `443`. The ACLK is encrypted, safe, and _is only established if you connect your node_.
 
-The Cloud App lives at app.netdata.cloud which currently resolves to 35.196.244.138. However, this IP or range of 
-IPs can change without notice. Watch this page for updates.
+The Cloud App lives at app.netdata.cloud which currently resolves to the following list of IPs: 
+
+- 54.198.178.11
+- 44.207.131.212
+- 44.196.50.41 
+ 
+:::caution
+
+This list of IPs can change without notice, we strongly advise you to whitelist the domain `app.netdata.cloud`, if
+this is not an option in your case always verify the current domain resolution (e.g via the `host` command).
+
+:::
 
 For a guide to connecting a node using the ACLK, plus additional troubleshooting and reference information, read our [get
 started with Cloud](https://learn.netdata.cloud/docs/cloud/get-started) guide or the full [connect to Cloud
 documentation](/claim/README.md).
 
 ## Data privacy
-[Data privacy](https://netdata.cloud/data-privacy/) is very important to us. We firmly believe that your data belongs to
+[Data privacy](https://netdata.cloud/privacy/) is very important to us. We firmly believe that your data belongs to
 you. This is why **we don't store any metric data in Netdata Cloud**.
 
 All the data that you see in the web browser when using Netdata Cloud, is actually streamed directly from the Netdata Agent to the Netdata Cloud dashboard. 
@@ -50,39 +60,12 @@ You can configure following keys in the `netdata.conf` section `[cloud]`:
 [cloud]
   statistics = yes
   query thread count = 2
-  aclk implementation = ng
+  mqtt5 = yes
 ```
 
 - `statistics` enables/disables ACLK related statistics and their charts. You can disable this to save some space in the database and slightly reduce memory usage of Netdata Agent.
 - `query thread count` specifies the number of threads to process cloud queries. Increasing this setting is useful for nodes with many children (streaming), which can expect to handle more queries (and/or more complicated queries).
-- `aclk implementation` - see [ACLK implementation](#aclk-implementation) section
-
-## ACLK implementation
-
-Currently we are in process of switching ACLK to brand new technical stack called ACLK-NG. To choose your implementation, change the `aclk implementation` setting in your `netdata.conf` (accepted values `ng` or `legacy`).
-
-Before changing this value, check the desired implementation is available (determined at build time) by running `netdata -W buildinfo`. Following lines indicate which ACLK implementations are available:
-
-```
-Features:
-    ACLK Next Generation:    YES
-    ACLK Legacy:             YES
-```
-
-To verify which ACLK implementation Netdata uses, visit the `/api/v1/info` endpoint on your local dashboard and check the `aclk-implementation` key.
-
-New Netdata Cloud features will be implemented on top of ACLK-NG only. ACLK Legacy is therefore kept as a fallback in case some users have issues.
-
-
-> Note: ACLK Legacy will be removed in following releases! 
-> Update your ACLK configuration to ACLK-NG to prevent any disruptions.
-
-
-### Improvements of ACLK-NG over Legacy are:
-- No dependency on custom patched `libmosquitto` (no bundling of libraries). Which should remove obstacles many GNU/Linux distribution package maintainers had trying to provide Netdata with Cloud support
-- No dependency on libwebsockets
-- Lower latency and higher throughput
-- More up to date, new features for Netdata Cloud are currently developed on top of ACLK-NG first
+- `mqtt5` allows disabling the new MQTT5 implementation which is used now by default in case of issues. This option will be removed in future stable release.
 
 ## Disable the ACLK
 
@@ -91,8 +74,7 @@ You have two options if you prefer to disable the ACLK and not use Netdata Cloud
 ### Disable at installation
 
 You can pass the `--disable-cloud` parameter to the Agent installation when using a kickstart script
-([kickstart.sh](/packaging/installer/methods/kickstart.md) or
-[kickstart-static64.sh](/packaging/installer/methods/kickstart-64.md)), or a [manual installation from
+([kickstart.sh](/packaging/installer/methods/kickstart.md), or a [manual installation from
 Git](/packaging/installer/methods/manual.md).
 
 When you pass this parameter, the installer does not download or compile any extra libraries. Once running, the Agent
@@ -164,4 +146,4 @@ If you changed the runtime setting in your `var/lib/netdata/cloud.d/cloud.conf` 
 
 Restart your Agent and [connect your node](/claim/README.md#how-to-connect-a-node).
 
-[![analytics](https://www.google-analytics.com/collect?v=1&aip=1&t=pageview&_s=1&ds=github&dr=https%3A%2F%2Fgithub.com%2Fnetdata%2Fnetdata&dl=https%3A%2F%2Fmy-netdata.io%2Fgithub%2Faclk%2FREADME&_u=MAC~&cid=5792dfd7-8dc4-476b-af31-da2fdb9f93d2&tid=UA-64295674-3)](<>)
+

@@ -4,32 +4,22 @@
 
 void chart_labels2json(RRDSET *st, BUFFER *wb, size_t indentation)
 {
+    if(unlikely(!st->state || !st->state->chart_labels))
+        return;
+
     char tabs[11];
-    struct label_index *labels = &st->state->labels;
 
     if (indentation > 10)
         indentation = 10;
 
     tabs[0] = '\0';
     while (indentation) {
-        strcat(tabs, "\t");
+        strcat(tabs, "\t\t");
         indentation--;
     }
 
-    int count = 0;
-    netdata_rwlock_rdlock(&labels->labels_rwlock);
-    for (struct label *label = labels->head; label; label = label->next) {
-        if(count > 0) buffer_strcat(wb, ",\n");
-        buffer_strcat(wb, tabs);
-
-        char value[CONFIG_MAX_VALUE * 2 + 1];
-        sanitize_json_string(value, label->value, CONFIG_MAX_VALUE * 2);
-        buffer_sprintf(wb, "\"%s\": \"%s\"", label->key, value);
-
-        count++;
-    }
+    rrdlabels_to_buffer(st->state->chart_labels, wb, tabs, ":", "\"", ",\n", NULL, NULL, NULL, NULL);
     buffer_strcat(wb, "\n");
-    netdata_rwlock_unlock(&labels->labels_rwlock);
 }
 
 // generate JSON for the /api/v1/chart API call
@@ -52,7 +42,6 @@ void rrdset2json(RRDSET *st, BUFFER *wb, size_t *dimensions_count, size_t *memor
         "\t\t\t\"priority\": %ld,\n"
         "\t\t\t\"plugin\": \"%s\",\n"
         "\t\t\t\"module\": \"%s\",\n"
-        "\t\t\t\"enabled\": %s,\n"
         "\t\t\t\"units\": \"%s\",\n"
         "\t\t\t\"data_url\": \"/api/v1/data?chart=%s\",\n"
         "\t\t\t\"chart_type\": \"%s\",\n",
@@ -66,7 +55,6 @@ void rrdset2json(RRDSET *st, BUFFER *wb, size_t *dimensions_count, size_t *memor
         st->priority,
         st->plugin_name ? st->plugin_name : "",
         st->module_name ? st->module_name : "",
-        rrdset_flag_check(st, RRDSET_FLAG_ENABLED) ? "true" : "false",
         st->units,
         st->name,
         rrdset_type_name(st->chart_type));
@@ -97,14 +85,14 @@ void rrdset2json(RRDSET *st, BUFFER *wb, size_t *dimensions_count, size_t *memor
         "\t\t\t\"dimensions\": {\n",
         st->update_every);
 
-    unsigned long memory = st->memsize;
+    unsigned long memory = sizeof(RRDSET) + st->memsize;
 
     size_t dimensions = 0;
     RRDDIM *rd;
     rrddim_foreach_read(rd, st) {
         if(rrddim_flag_check(rd, RRDDIM_FLAG_HIDDEN) || rrddim_flag_check(rd, RRDDIM_FLAG_OBSOLETE)) continue;
 
-        memory += rd->memsize;
+        memory += sizeof(RRDDIM) + rd->memsize;
 
         if (dimensions)
             buffer_strcat(wb, ",\n\t\t\t\t\"");

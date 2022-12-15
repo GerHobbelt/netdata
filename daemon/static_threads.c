@@ -11,8 +11,18 @@ extern void *health_main(void *ptr);
 extern void *pluginsd_main(void *ptr);
 extern void *service_main(void *ptr);
 extern void *statsd_main(void *ptr);
+extern void *timex_main(void *ptr);
 
 const struct netdata_static_thread static_threads_common[] = {
+    {
+        .name = "PLUGIN[timex]",
+        .config_section = CONFIG_SECTION_PLUGINS,
+        .config_name = "timex",
+        .enabled = 1,
+        .thread = NULL,
+        .init_routine = NULL,
+        .start_routine = timex_main
+    },
     {
         .name = "PLUGIN[check]",
         .config_section = CONFIG_SECTION_PLUGINS,
@@ -86,15 +96,6 @@ const struct netdata_static_thread static_threads_common[] = {
         .start_routine = statsd_main
     },
     {
-        .name = "BACKENDS",
-        .config_section = NULL,
-        .config_name = NULL,
-        .enabled = 1,
-        .thread = NULL,
-        .init_routine = NULL,
-        .start_routine = backends_main
-    },
-    {
         .name = "EXPORTING",
         .config_section = NULL,
         .config_name = NULL,
@@ -122,7 +123,7 @@ const struct netdata_static_thread static_threads_common[] = {
         .start_routine = socket_listen_main_static_threaded
     },
 
-#if defined(ENABLE_ACLK) || defined(ACLK_NG)
+#ifdef ENABLE_ACLK
     {
         .name = "ACLK_Main",
         .config_section = NULL,
@@ -133,6 +134,16 @@ const struct netdata_static_thread static_threads_common[] = {
         .start_routine = aclk_starter
     },
 #endif
+
+    {
+        .name = "rrdcontext",
+        .config_section = NULL,
+        .config_name = NULL,
+        .enabled = 1,
+        .thread = NULL,
+        .init_routine = NULL,
+        .start_routine = rrdcontext_main
+    },
 
     {NULL, NULL, NULL, 0, NULL, NULL, NULL}
 };

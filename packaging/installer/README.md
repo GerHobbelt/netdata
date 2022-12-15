@@ -5,6 +5,8 @@ custom_edit_url: https://github.com/netdata/netdata/edit/master/packaging/instal
 
 import { Install, InstallBox } from '../../../src/components/Install/'
 
+import { OneLineInstallWget, OneLineInstallCurl } from '../../../src/components/OneLineInstall/'
+
 # Installation guide
 
 Netdata is a monitoring agent designed to run on all your systems: physical and virtual servers, containers, even
@@ -37,15 +39,11 @@ This method is fully automatic on all Linux distributions, including Ubuntu, Deb
 To install Netdata, including all dependencies required to connect to Netdata Cloud, and get _automatic nightly
 updates_, run the following as your normal user:
 
-```bash
-wget -O /tmp/netdata-kickstart.sh https://my-netdata.io/kickstart.sh && sh /tmp/netdata-kickstart.sh
-```
+<OneLineInstallWget/>
 
 Or, if you have cURL but not wget (such as on macOS):
 
-```bash
-curl https://my-netdata.io/kickstart.sh > /tmp/netdata-kickstart.sh && sh /tmp/netdata-kickstart.sh
-```
+<OneLineInstallCurl/>
 
 This script will preferentially use native DEB/RPM packages if we provide them for your platform.
 
@@ -190,25 +188,20 @@ visit the Agent dashboard at `http://NODE:19999`, you need to update Netdata's p
 system.
 
 Run `ls -la /usr/share/netdata/web/index.html` to find the file's permissions. You may need to change this path based on
-the error you're seeing in your browser. In the below example, the file is owned by the user `netdata` and the group
-`netdata`.
+the error you're seeing in your browser. In the below example, the file is owned by the user `root` and the group
+`root`.
 
 ```bash
 ls -la /usr/share/netdata/web/index.html
--rw-r--r--. 1 netdata netdata 89377 May  5 06:30 /usr/share/netdata/web/index.html
+-rw-r--r--. 1 root root 89377 May  5 06:30 /usr/share/netdata/web/index.html
 ```
 
-Open your `netdata.conf` file and find the `[web]` section, plus the `web files owner`/`web files group` settings. Edit
-the lines to match the output from `ls -la` above and uncomment them if necessary.
+These files need to have the same user and group used to install your netdata. Suppose you installed netdata with user
+`netdata` and group `netdata`, in this scenario you will need to run the following command to fix the error:
 
-```conf
-[web]
-    web files owner = netdata
-    web files group = netdata
+```bash
+# chown -R netdata.netdata /usr/share/netdata/web
 ```
-
-Save the file, restart Netdata using `sudo systemctl restart netdata`, or the [appropriate
-method](/docs/configure/start-stop-restart.md) for your system, and try accessing the dashboard again.
 
 ### Multiple versions of OpenSSL
 
@@ -222,4 +215,4 @@ Our current build process has some issues when using certain configurations of t
 section on `nonrepresentable section on output`
 errors](/packaging/installer/methods/manual.md#nonrepresentable-section-on-output-errors) for a workaround.
 
-[![analytics](https://www.google-analytics.com/collect?v=1&aip=1&t=pageview&_s=1&ds=github&dr=https%3A%2F%2Fgithub.com%2Fnetdata%2Fnetdata&dl=https%3A%2F%2Fmy-netdata.io%2Fgithub%2Fpackaging%2Finstaller%2FREADME&_u=MAC~&cid=5792dfd7-8dc4-476b-af31-da2fdb9f93d2&tid=UA-64295674-3)](<>)
+
