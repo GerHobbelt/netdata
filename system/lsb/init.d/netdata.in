@@ -48,6 +48,8 @@ service_start() {
 	chown @netdata_user_POST@:@netdata_user_POST@ $PIDFILE_PATH
 	
 	log_daemon_msg "Starting real-time performance monitoring" "netdata"
+	# support magic ip so statsd can be used within container network
+	ip link add netdata type dummy || echo "inf already present"; ip addr add 169.254.254.254/32 dev netdata || echo "ip addr already present" 
 	start_daemon -p $PIDFILE $DAEMON_PATH/$DAEMON $DAEMONOPTS
 	RETVAL=$?
 	log_end_msg $RETVAL
@@ -63,6 +65,7 @@ service_stop() {
 	if [ $RETVAL -eq 0 ]; then
 		rm -f ${PIDFILE}
 	fi
+	ip addr del 169.254.254.254/32 dev netdata || echo "unable clean up if addr" ; ip link del netdata || echo "unable clean up vinf"
 	return $RETVAL
 }
 
