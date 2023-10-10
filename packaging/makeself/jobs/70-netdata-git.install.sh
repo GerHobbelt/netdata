@@ -37,7 +37,12 @@ run ./netdata-installer.sh \
   --enable-lto \
   --disable-cloud \
   --disable-telemetry \
-  --disbale-
+  --enable-plugin-freeipmi \
+  --disable-dbengine \
+  --disable-plugin-xenstat \
+  --disable-exporting-kinesis \
+  --disable-exporting-mongodb \
+  --disable-ml 
 
 # shellcheck disable=SC2015
 [ "${GITHUB_ACTIONS}" = "true" ] && echo "::group::Finishing netdata install" || true

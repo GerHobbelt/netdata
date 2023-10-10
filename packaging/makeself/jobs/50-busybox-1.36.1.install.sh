@@ -4,14 +4,14 @@
 # shellcheck source=packaging/makeself/functions.sh
 . "$(dirname "${0}")/../functions.sh" "${@}" || exit 1
 
-version="1.35.0"
+version="1.36.1"
 
 # shellcheck disable=SC2015
 [ "${GITHUB_ACTIONS}" = "true" ] && echo "::group::Building busybox" || true
 
 dir="busybox-${version}"
 url="https://www.busybox.net/downloads/busybox-${version}.tar.bz2"
-sha256="faeeb244c35a348a334f4a59e44626ee870fb07b6884d68c10ae8bc19f83a694"
+sha256="b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314"
 key="busybox"
 
 tar="${dir}.tar.bz2"
