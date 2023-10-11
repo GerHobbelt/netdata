@@ -37,7 +37,6 @@ run ./netdata-installer.sh \
   --enable-lto \
   --disable-cloud \
   --disable-telemetry \
-  --enable-plugin-freeipmi \
   --disable-dbengine \
   --disable-plugin-xenstat \
   --disable-exporting-kinesis \
