@@ -29,6 +29,7 @@ PACKAGES_NETDATA_DEMO_SITE=${PACKAGES_NETDATA_DEMO_SITE-0}
 PACKAGES_NETDATA_SENSORS=${PACKAGES_NETDATA_SENSORS-0}
 PACKAGES_NETDATA_DATABASE=${PACKAGES_NETDATA_DATABASE-1}
 PACKAGES_NETDATA_EBPF=${PACKAGES_NETDATA_EBPF-1}
+PACKAGES_NETDATA_FREEIPMI=${PACKAGES_NETDATA_FREEIPMI-0}
 
 # needed commands
 lsb_release=$(command -v lsb_release 2> /dev/null)
@@ -1133,6 +1134,12 @@ declare -A pkg_libelf=(
   ['alpine-3.3']="libelf-dev"
 )
 
+declare -A pkg_libipmimonitoring=(
+  ['alpine']="libipmimonitoring-dev"
+  ['ubuntu']="libipmimonitoring-dev"
+  ['default']="libipmimonitoring-devel"
+)
+
 validate_package_trees() {
   if type -t validate_tree_${tree} > /dev/null; then
     validate_tree_${tree}
@@ -1317,6 +1324,10 @@ packages() {
     require_cmd mail || suitable_package mailutils
     require_cmd iostat || suitable_package sysstat
     require_cmd iotop || suitable_package iotop
+  fi
+
+  if [ "${PACKAGES_NETDATA_FREEIPMI}" -ne 0 ]; then
+    suitable_package libipmimonitoring
   fi
 }
 
