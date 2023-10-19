@@ -332,6 +332,14 @@ int format_dimension_prometheus_remote_write(struct instance *instance, RRDDIM *
                     value, last_t * MSEC_PER_SEC);
             }
         }
+
+        if (unlikely(sending_labels_automatic(instance))) {
+            struct format_remote_write_label_callback tmp = {
+                .write_request = connector_specific_data->write_request,
+                .instance = instance
+            };
+            rrdlabels_walkthrough_read(rd->rrdset->rrdlabels, format_remote_write_label_callback, &tmp);
+        }
     }
 
     return 0;
