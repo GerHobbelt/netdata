@@ -330,6 +330,16 @@ static inline void do_disk_space_stats(struct mountinfo *mi, int update_every) {
         dict_mountpoints = dictionary_create_advanced(DICT_OPTION_NONE, &dictionary_stats_category_collectors, 0);
     }
 
+    if(unlikely(simple_pattern_matches(excluded_mountpoints, mi->mount_point))) {
+        netdata_log_info("DISKSPACE: Skipping mount point '%s' (disk '%s', filesystem '%s', root '%s') because it is excluded by configuration."
+                         , mi->mount_point
+                         , disk
+                         , mi->filesystem?mi->filesystem:""
+                         , mi->root?mi->root:""
+                         );
+        return;
+    }
+
     struct mount_point_metadata *m = dictionary_get(dict_mountpoints, mi->mount_point);
     if(unlikely(!m)) {
         int slow = 0;
@@ -339,10 +349,10 @@ static inline void do_disk_space_stats(struct mountinfo *mi, int update_every) {
         int def_space = config_get_boolean_ondemand(CONFIG_SECTION_DISKSPACE, "space usage for all disks", CONFIG_BOOLEAN_AUTO);
         int def_inodes = config_get_boolean_ondemand(CONFIG_SECTION_DISKSPACE, "inodes usage for all disks", CONFIG_BOOLEAN_AUTO);
 
-        if(unlikely(simple_pattern_matches(excluded_mountpoints, mi->mount_point))) {
-            def_space = CONFIG_BOOLEAN_NO;
-            def_inodes = CONFIG_BOOLEAN_NO;
-        }
+        // if(unlikely(simple_pattern_matches(excluded_mountpoints, mi->mount_point))) {
+        //     def_space = CONFIG_BOOLEAN_NO;
+        //     def_inodes = CONFIG_BOOLEAN_NO;
+        // }
 
         if(unlikely(simple_pattern_matches(excluded_filesystems, mi->filesystem))) {
             def_space = CONFIG_BOOLEAN_NO;

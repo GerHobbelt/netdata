@@ -779,6 +779,11 @@ int do_proc_net_dev(int update_every, usec_t dt) {
             if(d->enabled)
                 d->enabled = !simple_pattern_matches(disabled_list, d->name);
 
+            if(unlikely(!d->enabled)) {
+                netdata_log_info("PLUGIN: proc_net_dev: Skipping interface '%s' disabled by configuration", d->name);
+                continue;
+            }
+
             char buffer[FILENAME_MAX + 1];
 
             snprintfz(buffer, FILENAME_MAX, path_to_sys_devices_virtual_net, d->name);
@@ -831,8 +836,8 @@ int do_proc_net_dev(int update_every, usec_t dt) {
             d->do_mtu        = config_get_boolean_ondemand(buffer, "mtu",        do_mtu);
         }
 
-        if(unlikely(!d->enabled))
-            continue;
+        // if(unlikely(!d->enabled))
+        //     continue;
 
         // See https://github.com/netdata/netdata/issues/15206
         // This is necessary to prevent the creation of charts for virtual interfaces that will later be 
