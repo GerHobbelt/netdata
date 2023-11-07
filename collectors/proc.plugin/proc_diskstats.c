@@ -474,6 +474,12 @@ static void get_disk_config(struct disk *d) {
 
     if(def_enable != CONFIG_BOOLEAN_NO && (simple_pattern_matches(excluded_disks, d->device) || simple_pattern_matches(excluded_disks, d->disk)))
         def_enable = CONFIG_BOOLEAN_NO;
+#ifdef NETDATA_SKIP_IF_NOT_COLLECT
+    if(!def_enable) {
+        netdata_log_debug(D_COLLECTOR, "DISKSTAT: Skipping device: %s, disk: %s because it is excluded by configuration.", d->device, d->disk);
+        return;
+    }
+#endif
 
     char var_name[4096 + 1];
     snprintfz(var_name, 4096, CONFIG_SECTION_PLUGIN_PROC_DISKSTATS ":%s", d->disk);
