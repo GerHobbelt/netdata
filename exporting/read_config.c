@@ -408,6 +408,11 @@ struct engine *read_exporting_config()
         else 
             tmp_instance->config.options &= ~EXPORTING_OPTION_SEND_VARIABLES;
 
+        if (exporter_get_boolean(instance_name, "send internal labels", CONFIG_BOOLEAN_NO))
+            tmp_instance->config.options |= EXPORTING_OPTION_SEND_INTERNAL_LABELS;
+        else 
+            tmp_instance->config.options &= ~EXPORTING_OPTION_SEND_INTERNAL_LABELS;
+
         if (tmp_instance->config.type == EXPORTING_CONNECTOR_TYPE_PROMETHEUS_REMOTE_WRITE) {
             struct prometheus_remote_write_specific_config *connector_specific_config =
                 callocz(1, sizeof(struct prometheus_remote_write_specific_config));

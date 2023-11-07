@@ -143,6 +143,7 @@ static int format_remote_write_label_callback(const char *name, const char *valu
     struct format_remote_write_label_callback *d = (struct format_remote_write_label_callback *)data;
 
     if (!should_send_label(d->instance, ls)) return 0;
+    if (name[0] == '_' && !sending_labels_internal(d->instance)) return 0;
 
     char k[PROMETHEUS_ELEMENT_MAX + 1];
     char v[PROMETHEUS_ELEMENT_MAX + 1];
@@ -327,19 +328,18 @@ int format_dimension_prometheus_remote_write(struct instance *instance, RRDDIM *
 
                 add_metric(
                     connector_specific_data->write_request,
-                    name, chart, family, dimension,
+                    name, chart, family, dimension, 
                     (host == localhost) ? instance->config.hostname : rrdhost_hostname(host),
                     value, last_t * MSEC_PER_SEC);
             }
         }
 
-        if (unlikely(sending_labels_automatic(instance))) {
-            struct format_remote_write_label_callback tmp = {
-                .write_request = connector_specific_data->write_request,
-                .instance = instance
-            };
-            rrdlabels_walkthrough_read(rd->rrdset->rrdlabels, format_remote_write_label_callback, &tmp);
-        }
+        
+        struct format_remote_write_label_callback tmp = {
+            .write_request = connector_specific_data->write_request,
+            .instance = instance
+        };
+        rrdlabels_walkthrough_read(rd->rrdset->rrdlabels, format_remote_write_label_callback, &tmp);
     }
 
     return 0;
