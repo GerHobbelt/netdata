@@ -36,14 +36,38 @@
 #define NETDATA_EBPF_OLD_CONFIG_FILE "ebpf.conf"
 #define NETDATA_EBPF_CONFIG_FILE "ebpf.d.conf"
 
+#ifdef LIBBPF_MAJOR_VERSION // BTF code
+#include "includes/cachestat.skel.h"
+#include "includes/dc.skel.h"
+#include "includes/disk.skel.h"
+#include "includes/fd.skel.h"
+#include "includes/hardirq.skel.h"
+#include "includes/mdflush.skel.h"
+#include "includes/mount.skel.h"
+#include "includes/shm.skel.h"
+#include "includes/socket.skel.h"
+#include "includes/swap.skel.h"
+#include "includes/vfs.skel.h"
+
+extern struct cachestat_bpf *cachestat_bpf_obj;
+extern struct dc_bpf *dc_bpf_obj;
+extern struct disk_bpf *disk_bpf_obj;
+extern struct fd_bpf *fd_bpf_obj;
+extern struct hardirq_bpf *hardirq_bpf_obj;
+extern struct mount_bpf *mount_bpf_obj;
+extern struct mdflush_bpf *mdflush_bpf_obj;
+extern struct shm_bpf *shm_bpf_obj;
+extern struct socket_bpf *socket_bpf_obj;
+extern struct swap_bpf *bpf_obj;
+extern struct vfs_bpf *vfs_bpf_obj;
+#endif
+
 typedef struct netdata_syscall_stat {
     unsigned long bytes;               // total number of bytes
     uint64_t call;                     // total number of calls
     uint64_t ecall;                    // number of calls that returned error
     struct netdata_syscall_stat *next; // Link list
 } netdata_syscall_stat_t;
-
-typedef uint64_t netdata_idx_t;
 
 typedef struct netdata_publish_syscall {
     char *dimension;
@@ -92,6 +116,7 @@ enum ebpf_main_index {
     EBPF_MODULE_OOMKILL_IDX,
     EBPF_MODULE_SHM_IDX,
     EBPF_MODULE_MDFLUSH_IDX,
+    EBPF_MODULE_FUNCTION_IDX,
     /* THREADS MUST BE INCLUDED BEFORE THIS COMMENT */
     EBPF_OPTION_ALL_CHARTS,
     EBPF_OPTION_VERSION,
@@ -99,7 +124,8 @@ enum ebpf_main_index {
     EBPF_OPTION_GLOBAL_CHART,
     EBPF_OPTION_RETURN_MODE,
     EBPF_OPTION_LEGACY,
-    EBPF_OPTION_CORE
+    EBPF_OPTION_CORE,
+    EBPF_OPTION_UNITTEST
 };
 
 typedef struct ebpf_tracepoint {
@@ -107,12 +133,6 @@ typedef struct ebpf_tracepoint {
     char *class;
     char *event;
 } ebpf_tracepoint_t;
-
-enum ebpf_threads_status {
-    NETDATA_THREAD_EBPF_RUNNING,
-    NETDATA_THREAD_EBPF_STOPPING,
-    NETDATA_THREAD_EBPF_STOPPED
-};
 
 // Copied from musl header
 #ifndef offsetof
@@ -122,6 +142,9 @@ enum ebpf_threads_status {
 #define offsetof(type, member) ((size_t)((char *)&(((type *)0)->member) - (char *)0))
 #endif
 #endif
+
+// Messages
+#define NETDATA_EBPF_DEFAULT_FNT_NOT_FOUND "Cannot find the necessary functions to monitor"
 
 // Chart definitions
 #define NETDATA_EBPF_FAMILY "ebpf"
@@ -139,7 +162,14 @@ enum ebpf_threads_status {
 
 // Statistics charts
 #define NETDATA_EBPF_THREADS "ebpf_threads"
+#define NETDATA_EBPF_LIFE_TIME "ebpf_life_time"
 #define NETDATA_EBPF_LOAD_METHOD "ebpf_load_methods"
+#define NETDATA_EBPF_KERNEL_MEMORY "ebpf_kernel_memory"
+#define NETDATA_EBPF_HASH_TABLES_LOADED "ebpf_hash_tables_count"
+#define NETDATA_EBPF_HASH_TABLES_PER_CORE "ebpf_hash_tables_per_core"
+#define NETDATA_EBPF_HASH_TABLES_GLOBAL_ELEMENTS "ebpf_hash_tables_global_elements"
+#define NETDATA_EBPF_HASH_TABLES_INSERT_PID_ELEMENTS "ebpf_hash_tables_insert_pid_elements"
+#define NETDATA_EBPF_HASH_TABLES_REMOVE_PID_ELEMENTS "ebpf_hash_tables_remove_pid_elements"
 
 // Log file
 #define NETDATA_DEVELOPER_LOG_FILE "developer.log"
@@ -163,28 +193,29 @@ enum ebpf_algorithms_list {
 };
 
 // Threads
-extern void *ebpf_process_thread(void *ptr);
-extern void *ebpf_socket_thread(void *ptr);
+void *ebpf_process_thread(void *ptr);
+void *ebpf_socket_thread(void *ptr);
 
 // Common variables
 extern pthread_mutex_t lock;
+extern pthread_mutex_t ebpf_exit_cleanup;
 extern int ebpf_nprocs;
 extern int running_on_kernel;
 extern int isrh;
 extern char *ebpf_plugin_dir;
+extern int process_pid_fd;
 
 extern pthread_mutex_t collect_data_mutex;
-extern pthread_cond_t collect_data_cond_var;
 
 // Common functions
-extern void ebpf_global_labels(netdata_syscall_stat_t *is,
+void ebpf_global_labels(netdata_syscall_stat_t *is,
                                netdata_publish_syscall_t *pio,
                                char **dim,
                                char **name,
                                int *algorithm,
                                int end);
 
-extern void ebpf_write_chart_cmd(char *type,
+void ebpf_write_chart_cmd(char *type,
                                  char *id,
                                  char *title,
                                  char *units,
@@ -195,11 +226,11 @@ extern void ebpf_write_chart_cmd(char *type,
                                  int update_every,
                                  char *module);
 
-extern void ebpf_write_global_dimension(char *name, char *id, char *algorithm);
+void ebpf_write_global_dimension(char *name, char *id, char *algorithm);
 
-extern void ebpf_create_global_dimension(void *ptr, int end);
+void ebpf_create_global_dimension(void *ptr, int end);
 
-extern void ebpf_create_chart(char *type,
+void ebpf_create_chart(char *type,
                               char *id,
                               char *title,
                               char *units,
@@ -213,37 +244,35 @@ extern void ebpf_create_chart(char *type,
                               int update_every,
                               char *module);
 
-extern void write_begin_chart(char *family, char *name);
+void write_begin_chart(char *family, char *name);
 
-extern void write_chart_dimension(char *dim, long long value);
+void write_chart_dimension(char *dim, long long value);
 
-extern void write_count_chart(char *name, char *family, netdata_publish_syscall_t *move, uint32_t end);
+void write_count_chart(char *name, char *family, netdata_publish_syscall_t *move, uint32_t end);
 
-extern void write_err_chart(char *name, char *family, netdata_publish_syscall_t *move, int end);
+void write_err_chart(char *name, char *family, netdata_publish_syscall_t *move, int end);
 
-extern void write_io_chart(char *chart, char *family, char *dwrite, long long vwrite,
+void write_io_chart(char *chart, char *family, char *dwrite, long long vwrite,
                            char *dread, long long vread);
 
-extern void ebpf_create_charts_on_apps(char *name,
+void ebpf_create_charts_on_apps(char *name,
                                        char *title,
                                        char *units,
                                        char *family,
                                        char *charttype,
                                        int order,
                                        char *algorithm,
-                                       struct target *root,
+                                       struct ebpf_target *root,
                                        int update_every,
                                        char *module);
 
-extern void write_end_chart();
+void write_end_chart();
 
-extern void ebpf_cleanup_publish_syscall(netdata_publish_syscall_t *nps);
+int ebpf_enable_tracepoint(ebpf_tracepoint_t *tp);
+int ebpf_disable_tracepoint(ebpf_tracepoint_t *tp);
+uint32_t ebpf_enable_tracepoints(ebpf_tracepoint_t *tps);
 
-extern int ebpf_enable_tracepoint(ebpf_tracepoint_t *tp);
-extern int ebpf_disable_tracepoint(ebpf_tracepoint_t *tp);
-extern uint32_t ebpf_enable_tracepoints(ebpf_tracepoint_t *tps);
-
-extern void ebpf_pid_file(char *filename, size_t length);
+void ebpf_pid_file(char *filename, size_t length);
 
 #define EBPF_PROGRAMS_SECTION "ebpf programs"
 
@@ -260,31 +289,40 @@ extern void ebpf_pid_file(char *filename, size_t length);
 
 // Common variables
 extern int debug_enabled;
-extern struct pid_stat *root_of_pids;
+extern struct ebpf_pid_stat *ebpf_root_of_pids;
 extern ebpf_cgroup_target_t *ebpf_cgroup_pids;
 extern char *ebpf_algorithms[];
 extern struct config collector_config;
-extern ebpf_process_stat_t *global_process_stat;
 extern netdata_ebpf_cgroup_shm_t shm_ebpf_cgroup;
 extern int shm_fd_ebpf_cgroup;
 extern sem_t *shm_sem_ebpf_cgroup;
 extern pthread_mutex_t mutex_cgroup_shm;
-extern size_t all_pids_count;
+extern size_t ebpf_all_pids_count;
 extern ebpf_plugin_stats_t plugin_statistics;
+#ifdef LIBBPF_MAJOR_VERSION
 extern struct btf *default_btf;
+#else
+extern void *default_btf;
+#endif
 
 // Socket functions and variables
 // Common functions
-extern void ebpf_process_create_apps_charts(struct ebpf_module *em, void *ptr);
-extern void ebpf_socket_create_apps_charts(struct ebpf_module *em, void *ptr);
-extern void ebpf_cachestat_create_apps_charts(struct ebpf_module *em, void *root);
-extern void ebpf_one_dimension_write_charts(char *family, char *chart, char *dim, long long v1);
-extern collected_number get_value_from_structure(char *basis, size_t offset);
-extern void ebpf_update_pid_table(ebpf_local_maps_t *pid, ebpf_module_t *em);
-extern void ebpf_write_chart_obsolete(char *type, char *id, char *title, char *units, char *family,
+void ebpf_process_create_apps_charts(struct ebpf_module *em, void *ptr);
+void ebpf_socket_create_apps_charts(struct ebpf_module *em, void *ptr);
+void ebpf_cachestat_create_apps_charts(struct ebpf_module *em, void *root);
+void ebpf_one_dimension_write_charts(char *family, char *chart, char *dim, long long v1);
+collected_number get_value_from_structure(char *basis, size_t offset);
+void ebpf_update_pid_table(ebpf_local_maps_t *pid, ebpf_module_t *em);
+void ebpf_write_chart_obsolete(char *type, char *id, char *title, char *units, char *family,
                                       char *charttype, char *context, int order, int update_every);
-extern void write_histogram_chart(char *family, char *name, const netdata_idx_t *hist, char **dimensions, uint32_t end);
+void write_histogram_chart(char *family, char *name, const netdata_idx_t *hist, char **dimensions, uint32_t end);
 void ebpf_update_disabled_plugin_stats(ebpf_module_t *em);
+ARAL *ebpf_allocate_pid_aral(char *name, size_t size);
+void ebpf_unload_legacy_code(struct bpf_object *objects, struct bpf_link **probe_links);
+
+void ebpf_read_global_table_stats(netdata_idx_t *stats, netdata_idx_t *values, int map_fd,
+                                  int maps_per_core, uint32_t begin, uint32_t end);
+
 extern ebpf_filesystem_partitions_t localfs[];
 extern ebpf_sync_syscalls_t local_syscalls[];
 extern int ebpf_exit_plugin;

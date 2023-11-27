@@ -1,13 +1,22 @@
 <!--
-title: "nfacct.plugin"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/collectors/nfacct.plugin/README.md
+title: "Monitor Netfilter statistics (nfacct.plugin)"
+custom_edit_url: "https://github.com/netdata/netdata/edit/master/collectors/nfacct.plugin/README.md"
+sidebar_label: "Netfilter statistics (nfacct.plugin)"
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Integrations/Monitor/Networking"
 -->
 
-# nfacct.plugin
+# Monitor Netfilter statistics (nfacct.plugin)
 
 `nfacct.plugin` collects Netfilter statistics.
 
 ## Prerequisites
+
+If you are using [our official native DEB/RPM packages](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/packages.md), install the
+`netdata-plugin-nfacct` package using your system package manager.
+
+If you built Netdata locally:
 
 1.  install `libmnl-dev` and `libnetfilter-acct-dev` using the package manager of your system.
 

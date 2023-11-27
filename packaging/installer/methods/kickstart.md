@@ -1,30 +1,53 @@
 <!--
 title: "Install Netdata with kickstart.sh"
 description: "The kickstart.sh script installs Netdata from source, including all dependencies required to connect to Netdata Cloud, with a single command."
-custom_edit_url: https://github.com/netdata/netdata/edit/master/packaging/installer/methods/kickstart.md
+custom_edit_url: "https://github.com/netdata/netdata/edit/master/packaging/installer/methods/kickstart.md"
+sidebar_label: "One line installer (kickstart.sh)"
+learn_status: "Published"
+learn_rel_path: "Installation/Installation methods"
+sidebar_position: 10
 -->
-import { OneLineInstallWget, OneLineInstallCurl } from '../../../../../src/components/OneLineInstall/'
+
+import { OneLineInstallWget, OneLineInstallCurl } from '@site/src/components/OneLineInstall/'
+import { Install, InstallBox } from '@site/src/components/Install/'
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 # Install Netdata with kickstart.sh
 
-![](https://registry.my-netdata.io/api/v1/badge.svg?chart=web_log_nginx.requests_per_url&options=unaligned&dimensions=kickstart&group=sum&after=-3600&label=last+hour&units=kickstart%20downloads&value_color=orange&precision=0) ![](https://registry.my-netdata.io/api/v1/badge.svg?chart=web_log_nginx.requests_per_url&options=unaligned&dimensions=kickstart&group=sum&after=-86400&label=today&units=kickstart%20downloads&precision=0)
+![](https://registry.my-netdata.io/api/v1/badge.svg?chart=web_log_nginx.requests_by_url_pattern&options=unaligned&dimensions=kickstart&group=sum&after=-3600&label=last+hour&units=kickstart%20downloads&value_color=orange&precision=0) ![](https://registry.my-netdata.io/api/v1/badge.svg?chart=web_log_nginx.requests_by_url_pattern&options=unaligned&dimensions=kickstart&group=sum&after=-86400&label=today&units=kickstart%20downloads&precision=0)
 
 This page covers detailed instructions on using and configuring the automatic one-line installation script named
 `kickstart.sh`.
 
-The kickstart script works on all Linux distributions and macOS environments. By default, automatic nightly updates are enabled. If you are installing on macOS, make sure to check the [install documentation for macOS](macos.md) before continuing.
+The kickstart script works on all Linux distributions and macOS environments. By default, automatic nightly updates are enabled. If you are installing on macOS, make sure to check the [install documentation for macOS](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/macos.md) before continuing.
 
-> If you are unsure whether you want nightly or stable releases, read the [installation guide](/packaging/installer/README.md#nightly-vs-stable-releases). 
-> If you want to turn off [automatic updates](/packaging/installer/README.md#automatic-updates), use the `--no-updates` option. You can find more installation options below.
+
+> :bulb: Tip
+>
+> If you are unsure whether you want nightly or stable releases, read the [installation guide](https://github.com/netdata/netdata/blob/master/packaging/installer/README.md#nightly-vs-stable-releases).  
+
+> If you want to turn off [automatic updates](https://github.com/netdata/netdata/blob/master/packaging/installer/README.md#automatic-updates), use the `--no-updates` option. You can find more installation options below.
 
 To install Netdata, run the following as your normal user:
 
-<OneLineInstallWget/>
+<Tabs>
+  <TabItem value="wget" label="wget">
 
-Or, if you have cURL but not wget (such as on macOS):
+  <OneLineInstallWget/>
 
-<OneLineInstallCurl/>
+  </TabItem>
+  <TabItem value="curl" label="curl">
 
+  <OneLineInstallCurl/>
+
+  </TabItem>
+</Tabs>
+
+> :bookmark_tabs: Note
+> 
+> If you plan to also connect the node to Netdata Cloud, make sure to replace `YOUR_CLAIM_TOKEN` with the claim token of your space,
+> and `YOUR_ROOM_ID` with the ID of the room you are willing to connect the node to.
 
 ## What does `kickstart.sh` do?
 
@@ -35,7 +58,7 @@ The `kickstart.sh` script does the following after being downloaded and run usin
 - Attempts to install Netdata using our [official native binary packages](#native-packages).
 - If there are no official native binary packages for your system (or installing that way failed), tries to install
   using a [static build of Netdata](#static-builds) if one is available.
-- If no static build is available, installs required dependencies and then attempts to install by 
+- If no static build is available, installs required dependencies and then attempts to install by
   [building Netdata locally](#local-builds) (by downloading the sources and building them directly).
 - Installs `netdata-updater.sh` to `cron.daily`, so your Netdata installation will be updated with new nightly
   versions, unless you override that with an [optional parameter](#optional-parameters-to-alter-your-installation).
@@ -51,32 +74,42 @@ The `kickstart.sh` script accepts a number of optional parameters to control how
 - `--dry-run`: Show what the installer would do, but don’t actually do any of it.
 - `--dont-start-it`: Don’t auto-start the daemon after installing. This parameter is not guaranteed to work.
 - `--release-channel`: Specify a particular release channel to install from. Currently supported release channels are:
-    - `nightly`: Installs a nightly build (this is currently the default).
-    - `stable`: Installs a stable release.
-    - `default`: Explicitly request whatever the current default is.
+  - `nightly`: Installs a nightly build (this is currently the default).
+  - `stable`: Installs a stable release.
+  - `default`: Explicitly request whatever the current default is.
 - `--nightly-channel`: Synonym for `--release-channel nightly`.
 - `--stable-channel`: Synonym for `--release-channel stable`.
 - `--auto-update`: Enable automatic updates (this is the default).
 - `--no-updates`: Disable automatic updates.
 - `--disable-telemetry`: Disable anonymous statistics.
-- `--repositories-only`: Only install appropriate repository configuration packages (only for native install).
 - `--native-only`: Only install if native binary packages are available.
 - `--static-only`: Only install if a static build is available.
 - `--build-only`: Only install using a local build.
-- `--reinstall`: If an existing install is found, reinstall instead of trying to update it in place.
-- `--reinstall-even-if-unsafe`: Even try to reinstall if we don't think we can do so safely (implies `--reinstall`).
 - `--disable-cloud`: For local builds, don’t build any of the cloud code at all. For native packages and static builds,
     use runtime configuration to disable cloud support.
 - `--require-cloud`: Only install if Netdata Cloud can be enabled. Overrides `--disable-cloud`.
-- `--install`: Specify an installation prefix for local builds (by default, we use a sane prefix based on the type of system), this option is deprecated and will be removed in a future version, please use `--install-prefix` instead.
 - `--install-prefix`: Specify an installation prefix for local builds (by default, we use a sane prefix based on the type of system).
 - `--install-version`: Specify the version of Netdata to install.
 - `--old-install-prefix`: Specify the custom local build's installation prefix that should be removed.
-- `--uninstall`: Uninstall an existing installation of Netdata.
-- `--reinstall-clean`: Performs an uninstall of Netdata and clean installation.
 - `--local-build-options`: Specify additional options to pass to the installer code when building locally. Only valid if `--build-only` is also specified.
 - `--static-install-options`: Specify additional options to pass to the static installer code. Only valid if --static-only is also specified.
-- `--prepare-offline-install-source`: Instead of insallling the agent, prepare a directory that can be used to install on another system without needing to download anything. See our [offline installation documentation](/packaging/installer/methods/offline.md) for more info.
+- `--claim-token`: Specify a unique claiming token associated with your Space in Netdata Cloud to be used to connect to the node
+  after the install.
+- `--claim-rooms`: Specify a comma-separated list of tokens for each War Room this node should appear in.
+- `--claim-proxy`: Specify a proxy to use when connecting to the cloud in the form of `http://[user:pass@]host:ip` for an HTTP(S) proxy.
+  See [connecting through a proxy](https://github.com/netdata/netdata/blob/master/claim/README.md#connect-through-a-proxy) for details.
+- `--claim-url`: Specify a URL to use when connecting to the cloud. Defaults to `https://app.netdata.cloud`.
+- `--override-distro`: Override the distro detection logic and assume the system is using a specific Linux distribution and release. Takes a single argument consisting of the values of the `ID`, `VERSION_ID`, and `VERSION_CODENAME` fields from `/etc/os-release` for the desired distribution.
+
+The following options are mutually exclusive and specifiy special operations other than trying to install Netdata normally or update an existing install:
+
+- `--reinstall`: If there is an existing install, reinstall it instead of trying to update it. If there is not an existing install, install netdata normally.
+- `--reinstall-even-if-unsafe`: If there is an existing install, reinstall it instead of trying to update it, even if doing so is known to potentially break things (for example, if we cannot detect what type of installation it is). If there is not an existing install, install Netdata normally.
+- `--reinstall-clean`: If there is an existing install, uninstall it before trying to install Netdata. Fails if there is no existing install.
+- `--uninstall`: Uninstall an existing installation of Netdata. Fails if there is no existing install.
+- `--claim-only`: If there is an existing install, only try to claim it without attempting to update it. If there is no existing install, install and claim Netdata normally.
+- `--repositories-only`: Only install repository configuration packages instead of doing a full install of Netdata. Automatically sets --native-only.
+- `--prepare-offline-install-source`: Instead of insallling the agent, prepare a directory that can be used to install on another system without needing to download anything. See our [offline installation documentation](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/offline.md) for more info.
 
 Additionally, the following environment variables may be used to further customize how the script runs (most users
 should not need to use special values for any of these):
@@ -89,31 +122,6 @@ should not need to use special values for any of these):
   those to work, or have a different tool to do the same thing on your system, you can specify it here.
 - `DISABLE_TELEMETRY`: If set to a value other than 0, behave as if `--disable-telemetry` was specified.
 
-### Connect node to Netdata Cloud during installation
-
-The `kickstart.sh` script accepts additional parameters to automatically [connect](/claim/README.md) your node to Netdata Cloud immediately after installation. 
-
-> Note: You either need to run the command with root privileges or run it with the user that is running the agent.  More details: [Connect an agent without root privileges](/claim/README.md#connect-an-agent-without-root-privileges) section.
-
-To automatically claim nodes after installation: 
-
-1. Sign in to [Netdata Cloud](https://app.netdata.cloud/sign-in?cloudRoute=/spaces)
-2. Go to the [Spaces management area](https://learn.netdata.cloud/docs/cloud/spaces#manage-spaces)
-3. Click on **Connect Nodes**
-4. Find the `token` and `rooms` strings and specify your nodes:
-
-- `--claim-token`: Specify a unique claiming token associated with your Space in Netdata Cloud to be used to connect to the node
-  after the install.
-- `--claim-rooms`: Specify a comma-separated list of tokens for each War Room this node should appear in.
-- `--claim-proxy`: Specify a proxy to use when connecting to the cloud in the form of `http://[user:pass@]host:ip` for an HTTP(S) proxy.
-  See [connecting through a proxy](/claim/README.md#connect-through-a-proxy) for details.
-- `--claim-url`: Specify a URL to use when connecting to the cloud. Defaults to `https://app.netdata.cloud`.
-
-For example:
-
-```bash
-wget -O /tmp/netdata-kickstart.sh https://my-netdata.io/kickstart.sh && sh /tmp/netdata-kickstart.sh --claim-token TOKEN --claim-rooms ROOM1,ROOM2
-```
 
 ### Native packages
 
@@ -146,7 +154,6 @@ If you want to enforce the usage of a local build (perhaps because you require a
 which is not supported with native packages or static builds), you can do so by adding `--build-only` to the
 options you pass to the installer.
 
-
 ## Verify script integrity
 
 To use `md5sum` to verify the integrity of the `kickstart.sh` script you will download using the one-line command above,
@@ -157,16 +164,3 @@ run the following:
 ```
 
 If the script is valid, this command will return `OK, VALID`.
-
-## What's next?
-
-When you're finished with installation, check out our [single-node](/docs/quickstart/single-node.md) or
-[infrastructure](/docs/quickstart/infrastructure.md) monitoring quickstart guides based on your use case.
-
-Or, skip straight to [configuring the Netdata Agent](/docs/configure/nodes.md).
-
-Read through Netdata's [documentation](https://learn.netdata.cloud/docs), which is structured based on actions and
-solutions, to enable features like health monitoring, alarm notifications, long-term metrics storage, exporting to
-external databases, and more.
-
-

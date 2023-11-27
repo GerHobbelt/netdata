@@ -1,12 +1,6 @@
-<!--
-title: "ioping.plugin"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/collectors/ioping.plugin/README.md
--->
+# Monitor I/O latency using ioping.plugin
 
-# ioping.plugin
-
-The ioping plugin supports monitoring latency for any number of directories/files/devices,
-by pinging them with `ioping`.
+The ioping plugin supports monitoring I/O latency for any number of directories/files/devices, by pinging them with `ioping`.
 
 A recent version of `ioping` is required (one that supports option `-N`).
 The supplied plugin can install it, by running:

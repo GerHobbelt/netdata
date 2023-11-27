@@ -37,9 +37,9 @@ int init_json_instance(struct instance *instance)
 
     instance->check_response = exporting_discard_response;
 
-    instance->buffer = (void *)buffer_create(0);
+    instance->buffer = (void *)buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
     if (!instance->buffer) {
-        error("EXPORTING: cannot create buffer for json exporting connector instance %s", instance->config.name);
+        netdata_log_error("EXPORTING: cannot create buffer for json exporting connector instance %s", instance->config.name);
         return 1;
     }
 
@@ -71,10 +71,9 @@ int init_json_http_instance(struct instance *instance)
     instance->connector_specific_data = connector_specific_data;
 
 #ifdef ENABLE_HTTPS
-    connector_specific_data->flags = NETDATA_SSL_START;
-    connector_specific_data->conn = NULL;
+    connector_specific_data->ssl = NETDATA_SSL_UNSET_CONNECTION;
     if (instance->config.options & EXPORTING_OPTION_USE_TLS) {
-        security_start_ssl(NETDATA_SSL_CONTEXT_EXPORTING);
+        netdata_ssl_initialize_ctx(NETDATA_SSL_EXPORTING_CTX);
     }
 #endif
 
@@ -96,7 +95,7 @@ int init_json_http_instance(struct instance *instance)
 
     instance->check_response = exporting_discard_response;
 
-    instance->buffer = (void *)buffer_create(0);
+    instance->buffer = (void *)buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
 
     simple_connector_init(instance);
 
@@ -119,13 +118,13 @@ int init_json_http_instance(struct instance *instance)
 int format_host_labels_json_plaintext(struct instance *instance, RRDHOST *host)
 {
     if (!instance->labels_buffer)
-        instance->labels_buffer = buffer_create(1024);
+        instance->labels_buffer = buffer_create(1024, &netdata_buffers_statistics.buffers_exporters);
 
     if (unlikely(!sending_labels_configured(instance)))
         return 0;
 
     buffer_strcat(instance->labels_buffer, "\"labels\":{");
-    rrdlabels_to_buffer(host->host_labels, instance->labels_buffer, "", ":", "\"", ",",
+    rrdlabels_to_buffer(host->rrdlabels, instance->labels_buffer, "", ":", "\"", ",",
                         exporting_labels_filter_callback, instance,
                         NULL, sanitize_json_string);
     buffer_strcat(instance->labels_buffer, "},");
@@ -145,7 +144,7 @@ int format_dimension_collected_json_plaintext(struct instance *instance, RRDDIM 
     RRDSET *st = rd->rrdset;
     RRDHOST *host = st->rrdhost;
 
-    const char *tags_pre = "", *tags_post = "", *tags = host->tags;
+    const char *tags_pre = "", *tags_post = "", *tags = rrdhost_tags(host);
     if (!tags)
         tags = "";
 
@@ -187,24 +186,23 @@ int format_dimension_collected_json_plaintext(struct instance *instance, RRDDIM 
         "\"timestamp\":%llu}",
 
         instance->config.prefix,
-        (host == localhost) ? instance->config.hostname : host->hostname,
+        (host == localhost) ? instance->config.hostname : rrdhost_hostname(host),
         tags_pre,
         tags,
         tags_post,
         instance->labels_buffer ? buffer_tostring(instance->labels_buffer) : "",
 
-        st->id,
-        st->name,
-        st->family,
-        st->context,
-        st->type,
-        st->units,
+        rrdset_id(st),
+        rrdset_name(st),
+        rrdset_family(st),
+        rrdset_context(st),
+        rrdset_parts_type(st),
+        rrdset_units(st),
+        rrddim_id(rd),
+        rrddim_name(rd),
+        rd->collector.last_collected_value,
 
-        rd->id,
-        rd->name,
-        rd->last_collected_value,
-
-        (unsigned long long)rd->last_collected_time.tv_sec);
+        (unsigned long long)rd->collector.last_collected_time.tv_sec);
 
     if (instance->config.type != EXPORTING_CONNECTOR_TYPE_JSON_HTTP) {
         buffer_strcat(instance->buffer, "\n");
@@ -231,7 +229,7 @@ int format_dimension_stored_json_plaintext(struct instance *instance, RRDDIM *rd
     if(isnan(value))
         return 0;
 
-    const char *tags_pre = "", *tags_post = "", *tags = host->tags;
+    const char *tags_pre = "", *tags_post = "", *tags = rrdhost_tags(host);
     if (!tags)
         tags = "";
 
@@ -272,21 +270,20 @@ int format_dimension_stored_json_plaintext(struct instance *instance, RRDDIM *rd
         "\"timestamp\": %llu}",
 
         instance->config.prefix,
-        (host == localhost) ? instance->config.hostname : host->hostname,
+        (host == localhost) ? instance->config.hostname : rrdhost_hostname(host),
         tags_pre,
         tags,
         tags_post,
         instance->labels_buffer ? buffer_tostring(instance->labels_buffer) : "",
 
-        st->id,
-        st->name,
-        st->family,
-        st->context,
-        st->type,
-        st->units,
-
-        rd->id,
-        rd->name,
+        rrdset_id(st),
+        rrdset_name(st),
+        rrdset_family(st),
+        rrdset_context(st),
+        rrdset_parts_type(st),
+        rrdset_units(st),
+        rrddim_id(rd),
+        rrddim_name(rd),
         value,
 
         (unsigned long long)last_t);
@@ -346,7 +343,7 @@ void json_http_prepare_header(struct instance *instance)
         "\r\n",
         instance->config.destination,
         simple_connector_data->auth_string ? simple_connector_data->auth_string : "",
-        buffer_strlen(simple_connector_data->last_buffer->buffer));
+        (unsigned long int) buffer_strlen(simple_connector_data->last_buffer->buffer));
 
     return;
 }

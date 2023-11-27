@@ -153,9 +153,9 @@ static unsigned char label_values_char_map[256] = {
     [88] = 'X', // X keep
     [89] = 'Y', // Y keep
     [90] = 'Z', // Z keep
-    [91] = '_', // [
+    [91] = '[', // [ keep
     [92] = '/', // backslash convert \ to /
-    [93] = '_', // ]
+    [93] = ']', // ] keep
     [94] = '_', // ^
     [95] = '_', // _ keep
     [96] = '_', // `
@@ -369,12 +369,15 @@ __attribute__((constructor)) void initialize_labels_keys_char_map(void) {
 
 }
 
-static size_t rrdlabels_sanitize(unsigned char *dst, const unsigned char *src, size_t dst_size, unsigned char *char_map, bool utf, const char *empty) {
+size_t text_sanitize(unsigned char *dst, const unsigned char *src, size_t dst_size, unsigned char *char_map, bool utf, const char *empty, size_t *multibyte_length) {
     if(unlikely(!dst_size)) return 0;
+
     if(unlikely(!src || !*src)) {
         strncpyz((char *)dst, empty, dst_size);
         dst[dst_size - 1] = '\0';
-        return strlen((char *)dst);
+        size_t len = strlen((char *)dst);
+        if(multibyte_length) *multibyte_length = len;
+        return len;
     }
 
     unsigned char *d = dst;
@@ -385,7 +388,9 @@ static size_t rrdlabels_sanitize(unsigned char *dst, const unsigned char *src, s
     // copy while converting, but keep only one white space
     // we start wil last_is_space = 1 to skip leading spaces
     int last_is_space = 1;
+
     size_t mblen = 0;
+
     while(*src && d < end) {
         unsigned char c = *src;
 
@@ -394,7 +399,7 @@ static size_t rrdlabels_sanitize(unsigned char *dst, const unsigned char *src, s
 
             // find how big this character is (2-4 bytes)
             size_t utf_character_size = 2;
-            while(utf_character_size <= 4 && src[utf_character_size] && IS_UTF8_BYTE(src[utf_character_size]) && !IS_UTF8_STARTBYTE(src[utf_character_size]))
+            while(utf_character_size < 4 && src[utf_character_size] && IS_UTF8_BYTE(src[utf_character_size]) && !IS_UTF8_STARTBYTE(src[utf_character_size]))
                 utf_character_size++;
 
             if(utf) {
@@ -446,28 +451,34 @@ static size_t rrdlabels_sanitize(unsigned char *dst, const unsigned char *src, s
     *d = '\0';
 
     // check if dst is all underscores and empty it if it is
-    d = dst;
-    while(*d == '_') d++;
-    if(unlikely(*d == '\0')) {
-        *dst = '\0';
-        mblen = 0;
+    if(*dst == '_') {
+        unsigned char *t = dst;
+        while (*t == '_') t++;
+        if (unlikely(*t == '\0')) {
+            *dst = '\0';
+            mblen = 0;
+        }
     }
 
     if(unlikely(*dst == '\0')) {
         strncpyz((char *)dst, empty, dst_size);
         dst[dst_size - 1] = '\0';
-        return strlen((char *)dst);
+        mblen = strlen((char *)dst);
+        if(multibyte_length) *multibyte_length = mblen;
+        return mblen;
     }
 
-    return mblen;
+    if(multibyte_length) *multibyte_length = mblen;
+
+    return d - dst;
 }
 
 static inline size_t rrdlabels_sanitize_name(char *dst, const char *src, size_t dst_size) {
-    return rrdlabels_sanitize((unsigned char *)dst, (const unsigned char *)src, dst_size, label_names_char_map, 0, "");
+    return text_sanitize((unsigned char *)dst, (const unsigned char *)src, dst_size, label_names_char_map, 0, "", NULL);
 }
 
 static inline size_t rrdlabels_sanitize_value(char *dst, const char *src, size_t dst_size) {
-    return rrdlabels_sanitize((unsigned char *)dst, (const unsigned char *)src, dst_size, label_values_char_map, 1, "[none]");
+    return text_sanitize((unsigned char *)dst, (const unsigned char *)src, dst_size, label_values_char_map, 1, "[none]", NULL);
 }
 
 // ----------------------------------------------------------------------------
@@ -478,9 +489,7 @@ typedef struct rrdlabel {
     RRDLABEL_SRC label_source;
 } RRDLABEL;
 
-static void rrdlabel_insert_callback(const char *name, void *value, void *data) {
-    (void)name;
-    DICTIONARY *dict = (DICTIONARY *)data; (void)dict;
+static void rrdlabel_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, void *value, void *dict_ptr __maybe_unused) {
     RRDLABEL *lb = (RRDLABEL *)value;
 
     // label_value is already allocated by the STRING
@@ -488,42 +497,45 @@ static void rrdlabel_insert_callback(const char *name, void *value, void *data) 
     lb->label_source &= ~RRDLABEL_FLAG_OLD;
 }
 
-static void rrdlabel_delete_callback(const char *name, void *value, void *data) {
-    (void)name;
-    DICTIONARY *dict = (DICTIONARY *)data; (void)dict;
+static void rrdlabel_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, void *value, void *dict_ptr __maybe_unused) {
     RRDLABEL *lb = (RRDLABEL *)value;
 
     string_freez(lb->label_value);
     lb->label_value = NULL;
 }
 
-static void rrdlabel_conflict_callback(const char *name, void *oldvalue, void *newvalue, void *data) {
-    (void)name;
-    DICTIONARY *dict = (DICTIONARY *)data; (void)dict;
+static bool rrdlabel_conflict_callback(const DICTIONARY_ITEM *item __maybe_unused, void *oldvalue, void *newvalue, void *dict_ptr __maybe_unused) {
     RRDLABEL *lbold = (RRDLABEL *)oldvalue;
     RRDLABEL *lbnew = (RRDLABEL *)newvalue;
 
-    if(lbold->label_value == lbnew->label_value || strcmp(string2str(lbold->label_value), string2str(lbnew->label_value)) == 0) {
+    if(lbold->label_value == lbnew->label_value) {
         // they are the same
+
         lbold->label_source |=  lbnew->label_source;
         lbold->label_source |=  RRDLABEL_FLAG_OLD;
         lbold->label_source &= ~RRDLABEL_FLAG_NEW;
 
         // free the new one
         string_freez(lbnew->label_value);
+
+        return false;
     }
-    else {
-        // they are different
-        string_freez(lbold->label_value);
-        lbold->label_value  =   lbnew->label_value;
-        lbold->label_source =   lbnew->label_source;
-        lbold->label_source |=  RRDLABEL_FLAG_NEW;
-        lbold->label_source &= ~RRDLABEL_FLAG_OLD;
-    }
+
+    // they are different
+
+    string_freez(lbold->label_value);
+    lbold->label_value  =   lbnew->label_value;
+    lbold->label_source =   lbnew->label_source;
+    lbold->label_source |=  RRDLABEL_FLAG_NEW;
+    lbold->label_source &= ~RRDLABEL_FLAG_OLD;
+
+    return true;
 }
 
 DICTIONARY *rrdlabels_create(void) {
-    DICTIONARY *dict = dictionary_create(DICTIONARY_FLAG_DONT_OVERWRITE_VALUE);
+    DICTIONARY *dict = dictionary_create_advanced(DICT_OPTION_DONT_OVERWRITE_VALUE | DICT_OPTION_FIXED_SIZE,
+                                                  &dictionary_stats_category_rrdlabels, sizeof(RRDLABEL));
+
     dictionary_register_insert_callback(dict, rrdlabel_insert_callback, dict);
     dictionary_register_delete_callback(dict, rrdlabel_delete_callback, dict);
     dictionary_register_conflict_callback(dict, rrdlabel_conflict_callback, dict);
@@ -538,6 +550,9 @@ void rrdlabels_destroy(DICTIONARY *labels_dict) {
     dictionary_destroy(labels_dict);
 }
 
+void rrdlabels_flush(DICTIONARY *labels_dict) {
+    dictionary_flush(labels_dict);
+}
 
 // ----------------------------------------------------------------------------
 // rrdlabels_add()
@@ -556,7 +571,7 @@ static void labels_add_already_sanitized(DICTIONARY *dict, const char *key, cons
 
 void rrdlabels_add(DICTIONARY *dict, const char *name, const char *value, RRDLABEL_SRC ls) {
     if(!dict) {
-        error("%s(): called with NULL dictionary.", __FUNCTION__ );
+        netdata_log_error("%s(): called with NULL dictionary.", __FUNCTION__ );
         return;
     }
 
@@ -565,7 +580,7 @@ void rrdlabels_add(DICTIONARY *dict, const char *name, const char *value, RRDLAB
     rrdlabels_sanitize_value(v, value, RRDLABELS_MAX_VALUE_LENGTH);
 
     if(!*n) {
-        error("%s: cannot add name '%s' (value '%s') which is sanitized as empty string", __FUNCTION__, name, value);
+        netdata_log_error("%s: cannot add name '%s' (value '%s') which is sanitized as empty string", __FUNCTION__, name, value);
         return;
     }
 
@@ -606,7 +621,7 @@ static const char *get_quoted_string_up_to(char *dst, size_t dst_size, const cha
 
 void rrdlabels_add_pair(DICTIONARY *dict, const char *string, RRDLABEL_SRC ls) {
     if(!dict) {
-        error("%s(): called with NULL dictionary.", __FUNCTION__ );
+        netdata_log_error("%s(): called with NULL dictionary.", __FUNCTION__ );
         return;
     }
 
@@ -620,10 +635,12 @@ void rrdlabels_add_pair(DICTIONARY *dict, const char *string, RRDLABEL_SRC ls) {
 }
 
 // ----------------------------------------------------------------------------
-// rrdlabels_get_to_buffer_or_null()
+// rrdlabels_get_value_to_buffer_or_null()
 
 void rrdlabels_get_value_to_buffer_or_null(DICTIONARY *labels, BUFFER *wb, const char *key, const char *quote, const char *null) {
-    DICTIONARY_ITEM *acquired_item = dictionary_get_and_acquire_item(labels, key);
+    if(!labels) return;
+
+    const DICTIONARY_ITEM *acquired_item = dictionary_get_and_acquire_item(labels, key);
     RRDLABEL *lb = dictionary_acquired_item_value(acquired_item);
 
     if(lb && lb->label_value)
@@ -634,15 +651,77 @@ void rrdlabels_get_value_to_buffer_or_null(DICTIONARY *labels, BUFFER *wb, const
     dictionary_acquired_item_release(labels, acquired_item);
 }
 
+void rrdlabels_value_to_buffer_array_item_or_null(DICTIONARY *labels, BUFFER *wb, const char *key) {
+    if(!labels) return;
+
+    const DICTIONARY_ITEM *acquired_item = dictionary_get_and_acquire_item(labels, key);
+    RRDLABEL *lb = dictionary_acquired_item_value(acquired_item);
+
+    if(lb && lb->label_value)
+        buffer_json_add_array_item_string(wb, string2str(lb->label_value));
+    else
+        buffer_json_add_array_item_string(wb, NULL);
+
+    dictionary_acquired_item_release(labels, acquired_item);
+}
+
+// ----------------------------------------------------------------------------
+// rrdlabels_get_value_to_char_or_null()
+
+void rrdlabels_get_value_strdup_or_null(DICTIONARY *labels, char **value, const char *key) {
+    const DICTIONARY_ITEM *acquired_item = dictionary_get_and_acquire_item(labels, key);
+    RRDLABEL *lb = dictionary_acquired_item_value(acquired_item);
+
+    *value = (lb && lb->label_value) ? strdupz(string2str(lb->label_value)) : NULL;
+
+    dictionary_acquired_item_release(labels, acquired_item);
+}
+
+void rrdlabels_get_value_strcpyz(DICTIONARY *labels, char *dst, size_t dst_len, const char *key) {
+    const DICTIONARY_ITEM *acquired_item = dictionary_get_and_acquire_item(labels, key);
+    RRDLABEL *lb = dictionary_acquired_item_value(acquired_item);
+
+    if(lb && lb->label_value)
+        strncpyz(dst, string2str(lb->label_value), dst_len);
+    else
+        dst[0] = '\0';
+
+    dictionary_acquired_item_release(labels, acquired_item);
+}
+
+STRING *rrdlabels_get_value_string_dup(DICTIONARY *labels, const char *key) {
+    const DICTIONARY_ITEM *acquired_item = dictionary_get_and_acquire_item(labels, key);
+    RRDLABEL *lb = dictionary_acquired_item_value(acquired_item);
+
+    STRING *ret = NULL;
+    if(lb && lb->label_value)
+        ret = string_dup(lb->label_value);
+
+    dictionary_acquired_item_release(labels, acquired_item);
+
+    return ret;
+}
+
+STRING *rrdlabels_get_value_to_buffer_or_unset(DICTIONARY *labels, BUFFER *wb, const char *key, const char *unset) {
+    const DICTIONARY_ITEM *acquired_item = dictionary_get_and_acquire_item(labels, key);
+    RRDLABEL *lb = dictionary_acquired_item_value(acquired_item);
+
+    STRING *ret = NULL;
+    if(lb && lb->label_value)
+        buffer_strcat(wb, string2str(lb->label_value));
+    else
+        buffer_strcat(wb, unset);
+
+    dictionary_acquired_item_release(labels, acquired_item);
+
+    return ret;
+}
 
 // ----------------------------------------------------------------------------
 // rrdlabels_unmark_all()
 // remove labels RRDLABEL_FLAG_OLD and RRDLABEL_FLAG_NEW from all dictionary items
 
-static int remove_flags_old_new(const char *name, void *value, void *data) {
-    (void)name;
-    (void)data;
-
+static int remove_flags_old_new(const DICTIONARY_ITEM *item __maybe_unused, void *value, void *data __maybe_unused) {
     RRDLABEL *lb = (RRDLABEL *)value;
 
     if(lb->label_source & RRDLABEL_FLAG_OLD) lb->label_source &= ~RRDLABEL_FLAG_OLD;
@@ -660,12 +739,13 @@ void rrdlabels_unmark_all(DICTIONARY *labels) {
 // rrdlabels_remove_all_unmarked()
 // remove dictionary items that are neither old, nor new
 
-static int remove_not_old_not_new_callback(const char *name, void *value, void *data) {
+static int remove_not_old_not_new_callback(const DICTIONARY_ITEM *item, void *value, void *data) {
+    const char *name = dictionary_acquired_item_name(item);
     DICTIONARY *dict = (DICTIONARY *)data;
     RRDLABEL *lb = (RRDLABEL *)value;
 
     if(!(lb->label_source & (RRDLABEL_FLAG_OLD | RRDLABEL_FLAG_NEW | RRDLABEL_FLAG_PERMANENT))) {
-        dictionary_del_having_write_lock(dict, name);
+        dictionary_del(dict, name);
         return 1;
     }
 
@@ -685,7 +765,8 @@ struct labels_walkthrough {
     void *data;
 };
 
-static int labels_walkthrough_callback(const char *name, void *value, void *data) {
+static int labels_walkthrough_callback(const DICTIONARY_ITEM *item, void *value, void *data) {
+    const char *name = dictionary_acquired_item_name(item);
     struct labels_walkthrough *d = (struct labels_walkthrough *)data;
     RRDLABEL *lb = (RRDLABEL *)value;
 
@@ -717,7 +798,8 @@ int rrdlabels_sorted_walkthrough_read(DICTIONARY *labels, int (*callback)(const 
 // rrdlabels_migrate_to_these()
 // migrate an existing label list to a new list, INPLACE
 
-static int copy_label_to_dictionary_callback(const char *name, void *value, void *data) {
+static int copy_label_to_dictionary_callback(const DICTIONARY_ITEM *item, void *value, void *data) {
+    const char *name = dictionary_acquired_item_name(item);
     DICTIONARY *dst = (DICTIONARY *)data;
     RRDLABEL *lb = (RRDLABEL *)value;
     labels_add_already_sanitized(dst, name, string2str(lb->label_value), lb->label_source);
@@ -750,25 +832,30 @@ void rrdlabels_copy(DICTIONARY *dst, DICTIONARY *src) {
 // returns true when there are keys in the dictionary matching a simple pattern
 
 struct simple_pattern_match_name_value {
+    size_t searches;
     SIMPLE_PATTERN *pattern;
     char equal;
 };
 
-static int simple_pattern_match_name_only_callback(const char *name, void *value, void *data) {
+static int simple_pattern_match_name_only_callback(const DICTIONARY_ITEM *item, void *value, void *data) {
+    const char *name = dictionary_acquired_item_name(item);
     struct simple_pattern_match_name_value *t = (struct simple_pattern_match_name_value *)data;
     (void)value;
 
     // we return -1 to stop the walkthrough on first match
+    t->searches++;
     if(simple_pattern_matches(t->pattern, name)) return -1;
 
     return 0;
 }
 
-static int simple_pattern_match_name_and_value_callback(const char *name, void *value, void *data) {
+static int simple_pattern_match_name_and_value_callback(const DICTIONARY_ITEM *item, void *value, void *data) {
+    const char *name = dictionary_acquired_item_name(item);
     struct simple_pattern_match_name_value *t = (struct simple_pattern_match_name_value *)data;
     RRDLABEL *lb = (RRDLABEL *)value;
 
     // we return -1 to stop the walkthrough on first match
+    t->searches++;
     if(simple_pattern_matches(t->pattern, name)) return -1;
 
     size_t len = RRDLABELS_MAX_NAME_LENGTH + RRDLABELS_MAX_VALUE_LENGTH + 2; // +1 for =, +1 for \0
@@ -787,20 +874,26 @@ static int simple_pattern_match_name_and_value_callback(const char *name, void *
     // terminate it
     *dst = '\0';
 
-    if(simple_pattern_matches(t->pattern, tmp)) return -1;
+    t->searches++;
+    if(simple_pattern_matches_length_extract(t->pattern, tmp, dst - tmp, NULL, 0) == SP_MATCHED_POSITIVE)
+        return -1;
 
     return 0;
 }
 
-bool rrdlabels_match_simple_pattern_parsed(DICTIONARY *labels, SIMPLE_PATTERN *pattern, char equal) {
+bool rrdlabels_match_simple_pattern_parsed(DICTIONARY *labels, SIMPLE_PATTERN *pattern, char equal, size_t *searches) {
     if (!labels) return false;
 
     struct simple_pattern_match_name_value t = {
+        .searches = 0,
         .pattern = pattern,
         .equal = equal
     };
 
     int ret = dictionary_walkthrough_read(labels, equal?simple_pattern_match_name_and_value_callback:simple_pattern_match_name_only_callback, &t);
+
+    if(searches)
+        *searches = t.searches;
 
     return (ret == -1)?true:false;
 }
@@ -808,7 +901,7 @@ bool rrdlabels_match_simple_pattern_parsed(DICTIONARY *labels, SIMPLE_PATTERN *p
 bool rrdlabels_match_simple_pattern(DICTIONARY *labels, const char *simple_pattern_txt) {
     if (!labels) return false;
 
-    SIMPLE_PATTERN *pattern = simple_pattern_create(simple_pattern_txt, " ,|\t\r\n\f\v", SIMPLE_PATTERN_EXACT);
+    SIMPLE_PATTERN *pattern = simple_pattern_create(simple_pattern_txt, " ,|\t\r\n\f\v", SIMPLE_PATTERN_EXACT, true);
     char equal = '\0';
 
     const char *s;
@@ -819,7 +912,7 @@ bool rrdlabels_match_simple_pattern(DICTIONARY *labels, const char *simple_patte
         }
     }
 
-    bool ret = rrdlabels_match_simple_pattern_parsed(labels, pattern, equal);
+    bool ret = rrdlabels_match_simple_pattern_parsed(labels, pattern, equal, NULL);
 
     simple_pattern_free(pattern);
 
@@ -830,7 +923,9 @@ bool rrdlabels_match_simple_pattern(DICTIONARY *labels, const char *simple_patte
 // ----------------------------------------------------------------------------
 // Log all labels
 
-static int rrdlabels_log_label_to_buffer_callback(const char *name, void *value, void *data) {
+static int rrdlabels_log_label_to_buffer_callback(const DICTIONARY_ITEM *item, void *value, void *data) {
+    const char *name = dictionary_acquired_item_name(item);
+
     BUFFER *wb = (BUFFER *)data;
     RRDLABEL *lb = (RRDLABEL *)value;
 
@@ -880,7 +975,8 @@ struct labels_to_buffer {
     size_t count;
 };
 
-static int label_to_buffer_callback(const char *name, void *value, void *data) {
+static int label_to_buffer_callback(const DICTIONARY_ITEM *item, void *value, void *data) {
+    const char *name = dictionary_acquired_item_name(item);
     struct labels_to_buffer *t = (struct labels_to_buffer *)data;
     RRDLABEL *lb = (RRDLABEL *)value;
 
@@ -926,22 +1022,25 @@ int rrdlabels_to_buffer(DICTIONARY *labels, BUFFER *wb, const char *before_each,
     return dictionary_walkthrough_read(labels, label_to_buffer_callback, (void *)&tmp);
 }
 
-static int chart_label_store_to_sql_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
-    RRDSET *st = (RRDSET *)data;
-    sql_store_chart_label(st->chart_uuid, (int)ls, (char *)name, (char *)value);
-    return 1;
+void rrdlabels_to_buffer_json_members(DICTIONARY *labels, BUFFER *wb) {
+    RRDLABEL *lb;
+    dfe_start_read(labels, lb) {
+        buffer_json_member_add_string(wb, lb_dfe.name, string2str(lb->label_value));
+    }
+    dfe_done(lb);
 }
 
 void rrdset_update_rrdlabels(RRDSET *st, DICTIONARY *new_rrdlabels) {
-    if(!st->state->chart_labels)
-        st->state->chart_labels = rrdlabels_create();
+    if(!st->rrdlabels)
+        st->rrdlabels = rrdlabels_create();
 
     if (new_rrdlabels)
-        rrdlabels_migrate_to_these(st->state->chart_labels, new_rrdlabels);
+        rrdlabels_migrate_to_these(st->rrdlabels, new_rrdlabels);
 
-    // TODO - we should also cleanup sqlite from old new_rrdlabels that have been removed
-    rrdlabels_walkthrough_read(st->state->chart_labels, chart_label_store_to_sql_callback, st);
+    rrdset_flag_set(st, RRDSET_FLAG_METADATA_UPDATE);
+    rrdhost_flag_set(st->rrdhost, RRDHOST_FLAG_METADATA_UPDATE);
 }
+
 
 // ----------------------------------------------------------------------------
 // rrdlabels unit test
@@ -1107,12 +1206,14 @@ int rrdlabels_unittest_simple_pattern() {
 
 int rrdlabels_unittest_sanitize_value(const char *src, const char *expected) {
     char buf[RRDLABELS_MAX_VALUE_LENGTH + 1];
-    size_t mblen = rrdlabels_sanitize_value(buf, src, RRDLABELS_MAX_VALUE_LENGTH);
+    size_t len = rrdlabels_sanitize_value(buf, src, RRDLABELS_MAX_VALUE_LENGTH);
+    size_t expected_len = strlen(expected);
 
     int err = 0;
     if(strcmp(buf, expected) != 0) err = 1;
+    if(len != expected_len) err = 1;
 
-    fprintf(stderr, "%s(%s): %s, expected '%s', got '%s', mblen = %zu, bytes = %zu\n", __FUNCTION__, src, (err==1)?"FAILED":"OK", expected, buf, mblen, strlen(buf));
+    fprintf(stderr, "%s(%s): %s, expected '%s', got '%s', expected bytes = %zu, got bytes = %zu\n", __FUNCTION__, src, (err==1)?"FAILED":"OK", expected, buf, expected_len, strlen(buf));
     return err;
 }
 
@@ -1122,6 +1223,7 @@ int rrdlabels_unittest_sanitization() {
     errors += rrdlabels_unittest_sanitize_value("", "[none]");
     errors += rrdlabels_unittest_sanitize_value("1", "1");
     errors += rrdlabels_unittest_sanitize_value("  hello   world   ", "hello world");
+    errors += rrdlabels_unittest_sanitize_value("[none]", "[none]");
 
     // 2-byte UTF-8
     errors += rrdlabels_unittest_sanitize_value(" Ελλάδα ", "Ελλάδα");

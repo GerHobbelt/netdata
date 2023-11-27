@@ -21,10 +21,9 @@ int init_opentsdb_telnet_instance(struct instance *instance)
     instance->connector_specific_data = connector_specific_data;
 
 #ifdef ENABLE_HTTPS
-    connector_specific_data->flags = NETDATA_SSL_START;
-    connector_specific_data->conn = NULL;
+    connector_specific_data->ssl = NETDATA_SSL_UNSET_CONNECTION;
     if (instance->config.options & EXPORTING_OPTION_USE_TLS) {
-        security_start_ssl(NETDATA_SSL_CONTEXT_EXPORTING);
+        netdata_ssl_initialize_ctx(NETDATA_SSL_EXPORTING_CTX);
     }
 #endif
 
@@ -45,9 +44,9 @@ int init_opentsdb_telnet_instance(struct instance *instance)
     instance->prepare_header = NULL;
     instance->check_response = exporting_discard_response;
 
-    instance->buffer = (void *)buffer_create(0);
+    instance->buffer = (void *)buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
     if (!instance->buffer) {
-        error("EXPORTING: cannot create buffer for opentsdb telnet exporting connector instance %s", instance->config.name);
+        netdata_log_error("EXPORTING: cannot create buffer for opentsdb telnet exporting connector instance %s", instance->config.name);
         return 1;
     }
 
@@ -77,10 +76,9 @@ int init_opentsdb_http_instance(struct instance *instance)
 
     struct simple_connector_data *connector_specific_data = callocz(1, sizeof(struct simple_connector_data));
 #ifdef ENABLE_HTTPS
-    connector_specific_data->flags = NETDATA_SSL_START;
-    connector_specific_data->conn = NULL;
+    connector_specific_data->ssl = NETDATA_SSL_UNSET_CONNECTION;
     if (instance->config.options & EXPORTING_OPTION_USE_TLS) {
-        security_start_ssl(NETDATA_SSL_CONTEXT_EXPORTING);
+        netdata_ssl_initialize_ctx(NETDATA_SSL_EXPORTING_CTX);
     }
 #endif
     instance->connector_specific_data = connector_specific_data;
@@ -102,9 +100,9 @@ int init_opentsdb_http_instance(struct instance *instance)
     instance->prepare_header = opentsdb_http_prepare_header;
     instance->check_response = exporting_discard_response;
 
-    instance->buffer = (void *)buffer_create(0);
+    instance->buffer = (void *)buffer_create(0, &netdata_buffers_statistics.buffers_exporters);
     if (!instance->buffer) {
-        error("EXPORTING: cannot create buffer for opentsdb HTTP exporting connector instance %s", instance->config.name);
+        netdata_log_error("EXPORTING: cannot create buffer for opentsdb HTTP exporting connector instance %s", instance->config.name);
         return 1;
     }
 
@@ -150,13 +148,13 @@ void sanitize_opentsdb_label_value(char *dst, const char *src, size_t len)
 
 int format_host_labels_opentsdb_telnet(struct instance *instance, RRDHOST *host) {
     if(!instance->labels_buffer)
-        instance->labels_buffer = buffer_create(1024);
+        instance->labels_buffer = buffer_create(1024, &netdata_buffers_statistics.buffers_exporters);
 
     if (unlikely(!sending_labels_configured(instance)))
         return 0;
 
     buffer_strcat(instance->labels_buffer, " ");
-    rrdlabels_to_buffer(host->host_labels, instance->labels_buffer, "", "=", "", " ",
+    rrdlabels_to_buffer(host->rrdlabels, instance->labels_buffer, "", "=", "", " ",
                         exporting_labels_filter_callback, instance,
                         NULL, sanitize_opentsdb_label_value);
     return 0;
@@ -177,13 +175,13 @@ int format_dimension_collected_opentsdb_telnet(struct instance *instance, RRDDIM
     char chart_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         chart_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? st->name : st->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? rrdset_name(st) : rrdset_id(st),
         RRD_ID_LENGTH_MAX);
 
     char dimension_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         dimension_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rd->name : rd->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rrddim_name(rd) : rrddim_id(rd),
         RRD_ID_LENGTH_MAX);
 
     buffer_sprintf(
@@ -192,11 +190,11 @@ int format_dimension_collected_opentsdb_telnet(struct instance *instance, RRDDIM
         instance->config.prefix,
         chart_name,
         dimension_name,
-        (unsigned long long)rd->last_collected_time.tv_sec,
-        rd->last_collected_value,
-        (host == localhost) ? instance->config.hostname : host->hostname,
+        (unsigned long long)rd->collector.last_collected_time.tv_sec,
+        rd->collector.last_collected_value,
+        (host == localhost) ? instance->config.hostname : rrdhost_hostname(host),
         (host->tags) ? " " : "",
-        (host->tags) ? host->tags : "",
+        (host->tags) ? rrdhost_tags(host) : "",
         (instance->labels_buffer) ? buffer_tostring(instance->labels_buffer) : "");
 
     return 0;
@@ -217,13 +215,13 @@ int format_dimension_stored_opentsdb_telnet(struct instance *instance, RRDDIM *r
     char chart_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         chart_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? st->name : st->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? rrdset_name(st) : rrdset_id(st),
         RRD_ID_LENGTH_MAX);
 
     char dimension_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         dimension_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rd->name : rd->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rrddim_name(rd) : rrddim_id(rd),
         RRD_ID_LENGTH_MAX);
 
     time_t last_t;
@@ -240,9 +238,9 @@ int format_dimension_stored_opentsdb_telnet(struct instance *instance, RRDDIM *r
         dimension_name,
         (unsigned long long)last_t,
         value,
-        (host == localhost) ? instance->config.hostname : host->hostname,
+        (host == localhost) ? instance->config.hostname : rrdhost_hostname(host),
         (host->tags) ? " " : "",
-        (host->tags) ? host->tags : "",
+        (host->tags) ? rrdhost_tags(host) : "",
         (instance->labels_buffer) ? buffer_tostring(instance->labels_buffer) : "");
 
     return 0;
@@ -268,7 +266,7 @@ void opentsdb_http_prepare_header(struct instance *instance)
         "\r\n",
         instance->config.destination,
         simple_connector_data->auth_string ? simple_connector_data->auth_string : "",
-        buffer_strlen(simple_connector_data->last_buffer->buffer));
+        (unsigned long int) buffer_strlen(simple_connector_data->last_buffer->buffer));
 
     return;
 }
@@ -283,12 +281,12 @@ void opentsdb_http_prepare_header(struct instance *instance)
 
 int format_host_labels_opentsdb_http(struct instance *instance, RRDHOST *host) {
     if (!instance->labels_buffer)
-        instance->labels_buffer = buffer_create(1024);
+        instance->labels_buffer = buffer_create(1024, &netdata_buffers_statistics.buffers_exporters);
 
     if (unlikely(!sending_labels_configured(instance)))
         return 0;
 
-    rrdlabels_to_buffer(host->host_labels, instance->labels_buffer, ",", ":", "\"", "",
+    rrdlabels_to_buffer(host->rrdlabels, instance->labels_buffer, ",", ":", "\"", "",
                         exporting_labels_filter_callback, instance,
                         NULL, sanitize_opentsdb_label_value);
     return 0;
@@ -309,13 +307,13 @@ int format_dimension_collected_opentsdb_http(struct instance *instance, RRDDIM *
     char chart_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         chart_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? st->name : st->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? rrdset_name(st) : rrdset_id(st),
         RRD_ID_LENGTH_MAX);
 
     char dimension_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         dimension_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rd->name : rd->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rrddim_name(rd) : rrddim_id(rd),
         RRD_ID_LENGTH_MAX);
 
     if (buffer_strlen((BUFFER *)instance->buffer) > 2)
@@ -334,11 +332,11 @@ int format_dimension_collected_opentsdb_http(struct instance *instance, RRDDIM *
         instance->config.prefix,
         chart_name,
         dimension_name,
-        (unsigned long long)rd->last_collected_time.tv_sec,
-        rd->last_collected_value,
-        (host == localhost) ? instance->config.hostname : host->hostname,
+        (unsigned long long)rd->collector.last_collected_time.tv_sec,
+        rd->collector.last_collected_value,
+        (host == localhost) ? instance->config.hostname : rrdhost_hostname(host),
         (host->tags) ? " " : "",
-        (host->tags) ? host->tags : "",
+        (host->tags) ? rrdhost_tags(host) : "",
         instance->labels_buffer ? buffer_tostring(instance->labels_buffer) : "");
 
     return 0;
@@ -359,13 +357,13 @@ int format_dimension_stored_opentsdb_http(struct instance *instance, RRDDIM *rd)
     char chart_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         chart_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? st->name : st->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && st->name) ? rrdset_name(st) : rrdset_id(st),
         RRD_ID_LENGTH_MAX);
 
     char dimension_name[RRD_ID_LENGTH_MAX + 1];
     exporting_name_copy(
         dimension_name,
-        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rd->name : rd->id,
+        (instance->config.options & EXPORTING_OPTION_SEND_NAMES && rd->name) ? rrddim_name(rd) : rrddim_id(rd),
         RRD_ID_LENGTH_MAX);
 
     time_t last_t;
@@ -392,9 +390,9 @@ int format_dimension_stored_opentsdb_http(struct instance *instance, RRDDIM *rd)
         dimension_name,
         (unsigned long long)last_t,
         value,
-        (host == localhost) ? instance->config.hostname : host->hostname,
+        (host == localhost) ? instance->config.hostname : rrdhost_hostname(host),
         (host->tags) ? " " : "",
-        (host->tags) ? host->tags : "",
+        (host->tags) ? rrdhost_tags(host) : "",
         instance->labels_buffer ? buffer_tostring(instance->labels_buffer) : "");
 
     return 0;

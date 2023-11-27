@@ -11,7 +11,7 @@ SILENCERS *silencers;
  */
 SILENCER *create_silencer(void) {
     SILENCER *t = callocz(1, sizeof(SILENCER));
-    debug(D_HEALTH, "HEALTH command API: Created empty silencer");
+    netdata_log_debug(D_HEALTH, "HEALTH command API: Created empty silencer");
 
     return t;
 }
@@ -27,7 +27,7 @@ void health_silencers_add(SILENCER *silencer) {
     // Add the created instance to the linked list in silencers
     silencer->next = silencers->silencers;
     silencers->silencers = silencer;
-    debug(D_HEALTH, "HEALTH command API: Added silencer %s:%s:%s:%s:%s", silencer->alarms,
+    netdata_log_debug(D_HEALTH, "HEALTH command API: Added silencer %s:%s:%s:%s:%s", silencer->alarms,
           silencer->charts, silencer->contexts, silencer->hosts, silencer->families
     );
 }
@@ -73,7 +73,7 @@ SILENCER *health_silencers_addparam(SILENCER *silencer, char *key, char *value) 
                 ) {
             silencer = create_silencer();
             if(!silencer) {
-                error("Cannot add a new silencer to Netdata");
+                netdata_log_error("Cannot add a new silencer to Netdata");
                 return NULL;
             }
         }
@@ -81,19 +81,19 @@ SILENCER *health_silencers_addparam(SILENCER *silencer, char *key, char *value) 
 
     if (hash == hash_alarm && !strcasecmp(key, HEALTH_ALARM_KEY)) {
         silencer->alarms = strdupz(value);
-        silencer->alarms_pattern = simple_pattern_create(silencer->alarms, NULL, SIMPLE_PATTERN_EXACT);
+        silencer->alarms_pattern = simple_pattern_create(silencer->alarms, NULL, SIMPLE_PATTERN_EXACT, true);
     } else if (hash == hash_chart && !strcasecmp(key, HEALTH_CHART_KEY)) {
         silencer->charts = strdupz(value);
-        silencer->charts_pattern = simple_pattern_create(silencer->charts, NULL, SIMPLE_PATTERN_EXACT);
+        silencer->charts_pattern = simple_pattern_create(silencer->charts, NULL, SIMPLE_PATTERN_EXACT, true);
     } else if (hash == hash_context && !strcasecmp(key, HEALTH_CONTEXT_KEY)) {
         silencer->contexts = strdupz(value);
-        silencer->contexts_pattern = simple_pattern_create(silencer->contexts, NULL, SIMPLE_PATTERN_EXACT);
+        silencer->contexts_pattern = simple_pattern_create(silencer->contexts, NULL, SIMPLE_PATTERN_EXACT, true);
     } else if (hash == hash_host && !strcasecmp(key, HEALTH_HOST_KEY)) {
         silencer->hosts = strdupz(value);
-        silencer->hosts_pattern = simple_pattern_create(silencer->hosts, NULL, SIMPLE_PATTERN_EXACT);
+        silencer->hosts_pattern = simple_pattern_create(silencer->hosts, NULL, SIMPLE_PATTERN_EXACT, true);
     } else if (hash == hash_families && !strcasecmp(key, HEALTH_FAMILIES_KEY)) {
         silencer->families = strdupz(value);
-        silencer->families_pattern = simple_pattern_create(silencer->families, NULL, SIMPLE_PATTERN_EXACT);
+        silencer->families_pattern = simple_pattern_create(silencer->families, NULL, SIMPLE_PATTERN_EXACT, true);
     }
 
     return silencer;
@@ -116,7 +116,7 @@ int health_silencers_json_read_callback(JSON_ENTRY *e)
             e->callback_function = health_silencers_json_read_callback;
             if(strcmp(e->name,"")) {
                 // init silencer
-                debug(D_HEALTH, "JSON: Got object with a name, initializing new silencer for %s",e->name);
+                netdata_log_debug(D_HEALTH, "JSON: Got object with a name, initializing new silencer for %s",e->name);
 #endif
             e->callback_data = create_silencer();
             if(e->callback_data) {
@@ -133,18 +133,18 @@ int health_silencers_json_read_callback(JSON_ENTRY *e)
 
         case JSON_STRING:
             if(!strcmp(e->name,"type")) {
-                debug(D_HEALTH, "JSON: Processing type=%s",e->data.string);
+                netdata_log_debug(D_HEALTH, "JSON: Processing type=%s",e->data.string);
                 if (!strcmp(e->data.string,"SILENCE")) silencers->stype = STYPE_SILENCE_NOTIFICATIONS;
                 else if (!strcmp(e->data.string,"DISABLE")) silencers->stype = STYPE_DISABLE_ALARMS;
             } else {
-                debug(D_HEALTH, "JSON: Adding %s=%s", e->name, e->data.string);
+                netdata_log_debug(D_HEALTH, "JSON: Adding %s=%s", e->name, e->data.string);
                 if (e->callback_data)
                     (void)health_silencers_addparam(e->callback_data, e->name, e->data.string);
             }
             break;
 
         case JSON_BOOLEAN:
-            debug(D_HEALTH, "JSON: Processing all_alarms");
+            netdata_log_debug(D_HEALTH, "JSON: Processing all_alarms");
             silencers->all_alarms=e->data.boolean?1:0;
             break;
 

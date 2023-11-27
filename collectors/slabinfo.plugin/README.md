@@ -1,6 +1,10 @@
 <!--
 title: "slabinfo.plugin"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/collectors/slabinfo.plugin/README.md
+custom_edit_url: "https://github.com/netdata/netdata/edit/master/collectors/slabinfo.plugin/README.md"
+sidebar_label: "slabinfo.plugin"
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Integrations/Monitor/System metrics"
 -->
 
 # slabinfo.plugin
@@ -13,6 +17,9 @@ Each internal structure (process, file descriptor, inode...) is stored within a 
 
 The plugin is disabled by default because it collects and displays a huge amount of metrics.
 To enable it set `slabinfo = yes` in the `plugins` section of the `netdata.conf` configuration file.
+
+If you are using [our official native DEB/RPM packages](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/packages.md), you will additionally need to install the `netdata-plugin-slabinfo`
+package using your system package manager.
 
 There is currently no configuration needed for the plugin itself.
 

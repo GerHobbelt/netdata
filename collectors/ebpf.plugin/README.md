@@ -1,19 +1,21 @@
 <!--
-title: "eBPF monitoring with Netdata"
-description: "Use Netdata's extended Berkeley Packet Filter (eBPF) collector to monitor kernel-level metrics about your
-complex applications with per-second granularity."
-custom_edit_url: https://github.com/netdata/netdata/edit/master/collectors/ebpf.plugin/README.md
-sidebar_label: "eBPF"
+title: "Kernel traces/metrics (eBPF) monitoring with Netdata"
+description: "Use Netdata's extended Berkeley Packet Filter (eBPF) collector to monitor kernel-level metrics about yourcomplex applications with per-second granularity."
+custom_edit_url: "https://github.com/netdata/netdata/edit/master/collectors/ebpf.plugin/README.md"
+sidebar_label: "Kernel traces/metrics (eBPF)"
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Integrations/Monitor/System metrics"
 -->
 
-# eBPF monitoring with Netdata
+# Kernel traces/metrics (eBPF) collector
 
 The Netdata Agent provides many [eBPF](https://ebpf.io/what-is-ebpf/) programs to help you troubleshoot and debug how applications interact with the Linux kernel. The `ebpf.plugin` uses [tracepoints, trampoline, and2 kprobes](#how-netdata-collects-data-using-probes-and-tracepoints) to collect a wide array of high value data about the host that would otherwise be impossible to capture. 
 
 > ❗ eBPF monitoring only works on Linux systems and with specific Linux kernels, including all kernels newer than `4.11.0`, and all kernels on CentOS 7.6 or later. For kernels older than `4.11.0`, improved support is in active development.
 
 This document provides comprehensive details about the `ebpf.plugin`.
-For hands-on configuration and troubleshooting tips see our [tutorial on troubleshooting apps with eBPF metrics](/docs/guides/troubleshoot/monitor-debug-applications-ebpf.md).
+For hands-on configuration and troubleshooting tips see our [tutorial on troubleshooting apps with eBPF metrics](https://github.com/netdata/netdata/blob/master/docs/guides/troubleshoot/monitor-debug-applications-ebpf.md).
 
 <figure>
   <img src="https://user-images.githubusercontent.com/1153921/74746434-ad6a1e00-5222-11ea-858a-a7882617ae02.png" alt="An example of VFS charts, made possible by the eBPF collector plugin" />
@@ -42,12 +44,12 @@ If your Agent is v1.22 or older, you may to enable the collector yourself.
 
 To enable or disable the entire eBPF collector: 
 
-1.  Navigate to the [Netdata config directory](/docs/configure/nodes.md#the-netdata-config-directory).
+1.  Navigate to the [Netdata config directory](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md#the-netdata-config-directory).
     ```bash
     cd /etc/netdata
     ```
 
-2.  Use the [`edit-config`](/docs/configure/nodes.md#use-edit-config-to-edit-configuration-files) script to edit `netdata.conf`.
+2.  Use the [`edit-config`](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md#use-edit-config-to-edit-configuration-files) script to edit `netdata.conf`.
 
     ```bash
     ./edit-config netdata.conf
@@ -67,11 +69,11 @@ You can configure the eBPF collector's behavior to fine-tune which metrics you r
 
 To edit the `ebpf.d.conf`:
 
-1.  Navigate to the [Netdata config directory](/docs/configure/nodes.md#the-netdata-config-directory).
+1.  Navigate to the [Netdata config directory](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md#the-netdata-config-directory).
     ```bash
     cd /etc/netdata
     ```
-2.  Use the [`edit-config`](/docs/configure/nodes.md#use-edit-config-to-edit-configuration-files) script to edit [`ebpf.d.conf`](https://github.com/netdata/netdata/blob/master/collectors/ebpf.plugin/ebpf.d.conf).
+2.  Use the [`edit-config`](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md#use-edit-config-to-edit-configuration-files) script to edit [`ebpf.d.conf`](https://github.com/netdata/netdata/blob/master/collectors/ebpf.plugin/ebpf.d.conf).
 
     ```bash
     ./edit-config ebpf.d.conf
@@ -97,32 +99,24 @@ accepts the following values:
 -   `return`: In the `return` mode, the eBPF collector monitors the same kernel functions as `entry`, but also creates new
     charts for the return of these functions, such as errors. Monitoring function returns can help in debugging software,
     such as failing to close file descriptors or creating zombie processes.
--   `update every`:  Number of seconds used for eBPF to send data for Netdata.
--   `pid table size`: Defines the maximum number of PIDs stored inside the application hash table.
 
 #### Integration with `apps.plugin`
 
 The eBPF collector also creates charts for each running application through an integration with the
-[`apps.plugin`](/collectors/apps.plugin/README.md). This integration helps you understand how specific applications
+[`apps.plugin`](https://github.com/netdata/netdata/blob/master/collectors/apps.plugin/README.md). This integration helps you understand how specific applications
 interact with the Linux kernel.
 
-If you want to _disable_ the integration with `apps.plugin` along with the above charts, change the setting `apps` to
-`no`.
+If you want to enable `apps.plugin` integration, change the "apps" setting to "yes".
 
 ```conf
 [global]
    apps = yes
 ```
 
-When the integration is enabled, eBPF collector allocates memory for each process running. The total allocated memory
-has direct relationship with the kernel version. When the eBPF plugin is running on kernels newer than `4.15`, it uses
-per-cpu maps to speed up the update of hash tables. This also implies storing data for the same PID for each processor
-it runs.
-
 #### Integration with `cgroups.plugin`
 
 The eBPF collector also creates charts for each cgroup through an integration with the
-[`cgroups.plugin`](/collectors/cgroups.plugin/README.md). This integration helps you understand how a specific cgroup
+[`cgroups.plugin`](https://github.com/netdata/netdata/blob/master/collectors/cgroups.plugin/README.md). This integration helps you understand how a specific cgroup
 interacts with the Linux kernel.
 
 The integration with `cgroups.plugin` is disabled by default to avoid creating overhead on your system. If you want to
@@ -136,6 +130,42 @@ _enable_ the integration with `cgroups.plugin`, change the `cgroups` setting to 
 If you do not need to monitor specific metrics for your `cgroups`, you can enable `cgroups` inside
 `ebpf.d.conf`, and then disable the plugin for a specific `thread` by following the steps in the
 [Configuration](#configuring-ebpfplugin) section.
+
+#### Maps per Core
+
+When netdata is running on kernels newer than `4.6` users are allowed to modify how the `ebpf.plugin` creates maps (hash or 
+array). When `maps per core` is defined as `yes`, plugin will create a map per core on host, on the other hand,
+when the value is set as `no` only one hash table will be created, this option will use less memory, but it also can
+increase overhead for processes.
+
+#### Collect PID
+
+When one of the previous integrations is enabled, `ebpf.plugin` will use Process Identifier (`PID`) to identify the
+process group for which it needs to plot data.
+
+There are different ways to collect PID, and you can select the way `ebpf.plugin` collects data with the following
+values:
+
+-   `real parent`: This is the default mode. Collection will aggregate data for the real parent, the thread that creates
+     child threads.
+-   `parent`: Parent and real parent are the same when a process starts, but this value can be changed during run time.
+-   `all`: This option will store all PIDs that run on the host. Note, this method can be expensive for the host,
+    because more memory needs to be allocated and parsed.
+
+The threads that have integration with other collectors have an internal clean up wherein they attach either a
+`trampoline` or a `kprobe` to `release_task` internal function. To avoid `overload` on this function, `ebpf.plugin`
+will only enable these threads integrated with other collectors when the kernel is compiled with
+`CONFIG_DEBUG_INFO_BTF`, unless you enable them manually.
+
+#### Collection period
+
+The plugin uses the option `update every` to define the number of seconds used for eBPF to send data for Netdata. The default value
+is 5 seconds.
+
+#### PID table size
+
+The option `pid table size` defines the maximum number of PIDs stored inside the application hash table. The default value
+is defined according [kernel](https://elixir.bootlin.com/linux/v6.0.19/source/include/linux/threads.h#L28) source code.
 
 #### Integration Dashboard Elements
 
@@ -205,13 +235,12 @@ Linux metrics:
 
 The eBPF collector enables and runs the following eBPF programs by default:
 
+-   `cachestat`: Netdata's eBPF data collector creates charts about the memory page cache. When the integration with
+    [`apps.plugin`](https://github.com/netdata/netdata/blob/master/collectors/apps.plugin/README.md) is enabled, this collector creates charts for the whole host _and_
+    for each application.
 -   `fd` :  This eBPF program creates charts that show information about calls to open files.
 -   `mount`: This eBPF program creates charts that show calls to syscalls mount(2) and umount(2).
 -   `shm`: This eBPF program creates charts that show calls to syscalls shmget(2), shmat(2), shmdt(2) and shmctl(2).
--   `sync`: Monitor calls to syscalls sync(2), fsync(2), fdatasync(2), syncfs(2), msync(2), and sync_file_range(2).
--   `network viewer`: This eBPF program creates charts with information about `TCP` and `UDP` functions, including the
-    bandwidth consumed by each.
--   `vfs`: This eBPF program creates charts that show information about VFS (Virtual File System) functions.
 -   `process`: This eBPF program creates charts that show information about process life. When in `return` mode, it also
     creates charts showing errors when these operations are executed.
 -   `hardirq`: This eBPF program creates charts that show information about time spent servicing individual hardware
@@ -224,9 +253,6 @@ The eBPF collector enables and runs the following eBPF programs by default:
 
 You can also enable the following eBPF programs:
 
--   `cachestat`: Netdata's eBPF data collector creates charts about the memory page cache. When the integration with
-    [`apps.plugin`](/collectors/apps.plugin/README.md) is enabled, this collector creates charts for the whole host _and_
-    for each application.
 -   `dcstat` : This eBPF program creates charts that show information about file access using directory cache. It appends
     `kprobes` for `lookup_fast()` and `d_lookup()` to identify if files are inside directory cache, outside and files are
     not found.
@@ -234,7 +260,11 @@ You can also enable the following eBPF programs:
 -   `filesystem` : This eBPF program creates charts that show information about some filesystem latency.
 -   `swap` : This eBPF program creates charts that show information about swap access.
 -   `mdflush`: This eBPF program creates charts that show information about
+-   `sync`: Monitor calls to syscalls sync(2), fsync(2), fdatasync(2), syncfs(2), msync(2), and sync_file_range(2).
+-   `network viewer`: This eBPF program creates charts with information about `TCP` and `UDP` functions, including the
+    bandwidth consumed by each.
     multi-device software flushes.
+-   `vfs`: This eBPF program creates charts that show information about VFS (Virtual File System) functions.
 
 ### Configuring eBPF threads
 
@@ -242,11 +272,11 @@ You can configure each thread of the eBPF data collector. This allows you to ove
 
 To configure an eBPF thread:
 
-1.  Navigate to the [Netdata config directory](/docs/configure/nodes.md#the-netdata-config-directory).
+1.  Navigate to the [Netdata config directory](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md#the-netdata-config-directory).
     ```bash
     cd /etc/netdata
     ```
-2.  Use the [`edit-config`](/docs/configure/nodes.md#use-edit-config-to-edit-configuration-files) script to edit a thread configuration file. The following configuration files are available:
+2.  Use the [`edit-config`](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md#use-edit-config-to-edit-configuration-files) script to edit a thread configuration file. The following configuration files are available:
 
     -   `network.conf`: Configuration for the [`network` thread](#network-configuration). This config file overwrites the global options and also
         lets you specify which network the eBPF collector monitors.
@@ -285,7 +315,7 @@ You can configure the information shown on `outbound` and `inbound` charts with 
 
 When you define a `ports` setting, Netdata will collect network metrics for that specific port. For example, if you
 write `ports = 19999`, Netdata will collect only connections for itself. The `hostnames` setting accepts
-[simple patterns](/libnetdata/simple_pattern/README.md). The `ports`, and `ips` settings accept negation (`!`) to deny
+[simple patterns](https://github.com/netdata/netdata/blob/master/libnetdata/simple_pattern/README.md). The `ports`, and `ips` settings accept negation (`!`) to deny
 specific values or asterisk alone to define all values.
 
 In the above example, Netdata will collect metrics for all ports between 1 and 443, with the exception of 53 (domain)
@@ -860,13 +890,23 @@ These are tracepoints related to [OOM](https://en.wikipedia.org/wiki/Out_of_memo
 eBPF monitoring is complex and produces a large volume of metrics. We've discovered scenarios where the eBPF plugin
 significantly increases kernel memory usage by several hundred MB.
 
-If your node is experiencing high memory usage and there is no obvious culprit to be found in the `apps.mem` chart,
-consider testing for high kernel memory usage by [disabling eBPF monitoring](#configuring-ebpfplugin). Next,
-[restart Netdata](/docs/configure/start-stop-restart.md) with `sudo systemctl restart netdata` to see if system memory
-usage (see the `system.ram` chart) has dropped significantly.
+When the integration with apps or cgroup is enabled, the eBPF collector allocates memory for each process running. If your
+node is experiencing high memory usage and there is no obvious culprit to be found in the `apps.mem` chart, consider:
 
-Beginning with `v1.31`, kernel memory usage is configurable via the [`pid table size` setting](#ebpf-load-mode)
+- Modify [maps per core](#maps-per-core) to use only one map.
+- Disable [integration with apps](#integration-with-appsplugin).
+- Disable [integration with cgroup](#integration-with-cgroupsplugin).
+
+If with these changes you still suspect eBPF using too much memory, and there is no obvious culprit to be found 
+in the `apps.mem` chart, consider testing for high kernel memory usage by [disabling eBPF monitoring](#configuring-ebpfplugin).
+Next, [restart Netdata](https://github.com/netdata/netdata/blob/master/docs/configure/start-stop-restart.md) with
+`sudo systemctl restart netdata` to see if system memory usage (see the `system.ram` chart) has dropped significantly.
+
+Beginning with `v1.31`, kernel memory usage is configurable via the [`pid table size` setting](#pid-table-size)
 in `ebpf.conf`.
+
+The total memory usage is a well known [issue](https://lore.kernel.org/all/167821082315.1693.6957546778534183486.git-patchwork-notify@kernel.org/) 
+for eBPF, this is not a bug present in plugin.
 
 ### SELinux
 
@@ -949,3 +989,50 @@ shows how the lockdown module impacts `ebpf.plugin` based on the selected option
 
 If you or your distribution compiled the kernel with the last combination, your system cannot load shared libraries
 required to run `ebpf.plugin`.
+
+## Function
+
+The eBPF plugin has a [function](https://github.com/netdata/netdata/blob/master/docs/cloud/netdata-functions.md) named
+`ebpf_thread` that controls its internal threads and helps to reduce the overhead on host. Using the function you
+can run the plugin with all threads disabled and enable them only when you want to take a look in specific areas.
+
+### List threads
+
+To list all threads status you can query directly the endpoint function:
+
+`http://localhost:19999/api/v1/function?function=ebpf_thread`
+
+It is also possible to query a specific thread adding keyword `thread` and thread name:
+
+`http://localhost:19999/api/v1/function?function=ebpf_thread%20thread:mount`
+
+### Enable thread
+
+It is possible to enable a specific thread using the keyword `enable`:
+
+`http://localhost:19999/api/v1/function?function=ebpf_thread%20enable:mount`
+
+this will run thread `mount` during 300 seconds (5 minutes). You can specify a specific period by appending the period
+after the thread name:
+
+`http://localhost:19999/api/v1/function?function=ebpf_thread%20enable:mount:600`
+
+in this example thread `mount` will run during 600 seconds (10 minutes).
+
+### Disable thread
+
+It is also possible to stop any thread running using the keyword `disable`. For example, to disable `cachestat` you can
+request:
+
+`http://localhost:19999/api/v1/function?function=ebpf_thread%20disable:cachestat`
+
+### Debugging threads
+
+You can verify the impact of threads on the host by running the
+[ebpf_thread_function.sh](https://github.com/netdata/netdata/blob/master/tests/ebpf/ebpf_thread_function.sh)
+script on your environment.
+
+You can check the results of having threads running on your environment in the Netdata monitoring section on your
+dashboard
+
+<img src="https://github.com/netdata/netdata/assets/49162938/91823573-114c-4c16-b634-cc46f7bb1bcf" alt="Threads running." />

@@ -1,10 +1,13 @@
 <!--
 title: "UPS/PDU monitoring with Netdata"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/collectors/charts.d.plugin/nut/README.md
+custom_edit_url: "https://github.com/netdata/netdata/edit/master/collectors/charts.d.plugin/nut/README.md"
 sidebar_label: "UPS/PDU"
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Integrations/Monitor/Remotes/Devices"
 -->
 
-# UPS/PDU monitoring with Netdata
+# UPS/PDU collector
 
 Collects UPS data for all power devices configured in the system.
 
@@ -50,8 +53,10 @@ The following charts will be created:
 
 ## Configuration
 
+If using [our official native DEB/RPM packages](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/packages.md), make sure `netdata-plugin-chartsd` is installed.
+
 Edit the `charts.d/nut.conf` configuration file using `edit-config` from the Netdata [config
-directory](/docs/configure/nodes.md), which is typically at `/etc/netdata`.
+directory](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md), which is typically at `/etc/netdata`.
 
 ```bash
 cd /etc/netdata   # Replace this path with your Netdata config directory, if different

@@ -2,6 +2,10 @@
 title: "Health API Calls"
 date: 2020-04-27
 custom_edit_url: https://github.com/netdata/netdata/edit/master/web/api/health/README.md
+sidebar_label: "Health API Calls"
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Developers/Web/Api"
 -->
 
 # Health API Calls
@@ -24,12 +28,12 @@ This API call will return the alarms currently in WARNING or CRITICAL state.
 
 ### Event Log
 
-The size of the alarm log is configured in `netdata.conf`. There are 2 settings: the rotation of the alarm log file and the in memory size of the alarm log.
+The size of the alarm log is configured in `netdata.conf`. There are 2 settings: the event history kept in the DB (in seconds), and the in memory size of the alarm log.
 
 ```
 [health]
 	in memory max health log entries = 1000
-	rotate log every lines = 2000
+	health log history = 432000
 ```
 
 The API call retrieves all entries of the alarm log:
@@ -72,7 +76,7 @@ You can access the API via GET requests, by adding the bearer token to an `Autho
 curl "http://NODE:19999/api/v1/manage/health?cmd=RESET" -H "X-Auth-Token: Mytoken"
 ```
 
-By default access to the health management API is only allowed from `localhost`. Accessing the API from anything else will return a 403 error with the message `You are not allowed to access this resource.`. You can change permissions by editing the `allow management from` variable in `netdata.conf` within the [web] section. See [web server access lists](/web/server/README.md#access-lists) for more information.
+By default access to the health management API is only allowed from `localhost`. Accessing the API from anything else will return a 403 error with the message `You are not allowed to access this resource.`. You can change permissions by editing the `allow management from` variable in `netdata.conf` within the [web] section. See [web server access lists](https://github.com/netdata/netdata/blob/master/web/server/README.md#access-lists) for more information.
 
 The command `RESET` just returns Netdata to the default operation, with all health checks and notifications enabled.
 If you've configured and entered your token correctly, you should see the plain text response `All health checks and notifications are enabled`.
@@ -126,7 +130,7 @@ curl "http://NODE:19999/api/v1/manage/health?cmd=SILENCE&context=load" -H "X-Aut
 
 #### Selection criteria
 
-The `selection criteria` are key/value pairs, in the format `key : value`, where value is a Netdata [simple pattern](/libnetdata/simple_pattern/README.md). This means that you can create very powerful selectors (you will rarely need more than one or two).
+The `selection criteria` are key/value pairs, in the format `key : value`, where value is a Netdata [simple pattern](https://github.com/netdata/netdata/blob/master/libnetdata/simple_pattern/README.md). This means that you can create very powerful selectors (you will rarely need more than one or two).
 
 The accepted keys for the `selection criteria` are the following:
 
@@ -220,6 +224,6 @@ The file's location is configurable in `netdata.conf`. The default is shown belo
 
 ### Further reading
 
-The test script under [tests/health_mgmtapi](/tests/health_mgmtapi/README.md) contains a series of tests that you can either run or read through to understand the various calls and responses better.
+The test script under [tests/health_mgmtapi](https://github.com/netdata/netdata/blob/master/tests/health_mgmtapi/README.md) contains a series of tests that you can either run or read through to understand the various calls and responses better.
 
 

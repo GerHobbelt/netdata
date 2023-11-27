@@ -21,6 +21,8 @@ if [ ! "${DISABLE_TELEMETRY:-0}" -eq 0 ] ||
   touch /etc/netdata/.opt-out-from-anonymous-statistics
 fi
 
+chmod o+rX / # Needed to fix permissions issues in some cases.
+
 BALENA_PGID=$(stat -c %g /var/run/balena.sock 2>/dev/null || true)
 DOCKER_PGID=$(stat -c %g /var/run/docker.sock 2>/dev/null || true)
 
@@ -44,9 +46,18 @@ if [ -n "${PGID}" ]; then
   usermod -a -G "${PGID}" "${DOCKER_USR}" || echo >&2 "Could not add netdata user to group docker with ID ${PGID}"
 fi
 
-if mountpoint -q /etc/netdata && [ -z "$(ls -A /etc/netdata)" ]; then
+if mountpoint -q /etc/netdata; then
   echo "Copying stock configuration to /etc/netdata"
-  cp -a /etc/netdata.stock/. /etc/netdata
+  cp -an /etc/netdata.stock/* /etc/netdata
+  cp -an /etc/netdata.stock/.[^.]* /etc/netdata
+fi
+
+if [ -w "/etc/netdata" ]; then
+  if mountpoint -q /etc/netdata; then
+    hostname >/etc/netdata/.container-hostname
+  else
+    rm -f /etc/netdata/.container-hostname
+  fi
 fi
 
 if [ -n "${NETDATA_CLAIM_URL}" ] && [ -n "${NETDATA_CLAIM_TOKEN}" ] && [ ! -f /var/lib/netdata/cloud.d/claimed_id ]; then
@@ -57,6 +68,19 @@ if [ -n "${NETDATA_CLAIM_URL}" ] && [ -n "${NETDATA_CLAIM_TOKEN}" ] && [ ! -f /v
                              ${NETDATA_CLAIM_PROXY:+-proxy="${NETDATA_CLAIM_PROXY}"} \
                              ${NETDATA_EXTRA_CLAIM_OPTS} \
                              -daemon-not-running
+fi
+
+if [ -n "${NETDATA_EXTRA_APK_PACKAGES}" ]; then
+  echo "Fetching APK repository metadata."
+  if ! apk update; then
+    echo "Failed to fetch APK repository metadata."
+  else
+    echo "Installing supplementary packages."
+    # shellcheck disable=SC2086
+    if ! apk add --no-cache ${NETDATA_EXTRA_APK_PACKAGES}; then
+      echo "Failed to install supplementary packages."
+    fi
+  fi
 fi
 
 exec /usr/sbin/netdata -u "${DOCKER_USR}" -D -s /host -p "${NETDATA_LISTENER_PORT}" "$@"

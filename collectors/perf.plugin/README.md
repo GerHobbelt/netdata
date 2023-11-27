@@ -1,14 +1,21 @@
 <!--
-title: "perf.plugin"
-custom_edit_url: https://github.com/netdata/netdata/edit/master/collectors/perf.plugin/README.md
+title: "Monitor CPU performance statistics (perf.plugin)"
+custom_edit_url: "https://github.com/netdata/netdata/edit/master/collectors/perf.plugin/README.md"
+sidebar_label: "CPU performance statistics (perf.plugin)"
+learn_status: "Published"
+learn_topic_type: "References"
+learn_rel_path: "Integrations/Monitor/System metrics"
 -->
 
-# perf.plugin
+# Monitor CPU performance statistics (perf.plugin)
 
 `perf.plugin` collects system-wide CPU performance statistics from Performance Monitoring Units (PMU) using
 the `perf_event_open()` system call.
 
 ## Important Notes
+
+If you are using [our official native DEB/RPM packages](https://github.com/netdata/netdata/blob/master/packaging/installer/methods/packages.md), you will need to install
+the `netdata-plugin-perf` package using your system package manager.
 
 Accessing hardware PMUs requires root permissions, so the plugin is setuid to root.
 

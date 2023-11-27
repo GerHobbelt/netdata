@@ -3,8 +3,9 @@
 #ifndef NETDATA_EBPF_DCSTAT_H
 #define NETDATA_EBPF_DCSTAT_H 1
 
-// Module name
+// Module name & description
 #define NETDATA_EBPF_MODULE_NAME_DCSTAT "dcstat"
+#define NETDATA_EBPF_DC_MODULE_DESC "Monitor file access using directory cache. This thread is integrated with apps and cgroup."
 
 // charts
 #define NETDATA_DC_HIT_CHART "dc_hit_ratio"
@@ -28,7 +29,8 @@
 #define NETDATA_SYSTEMD_DC_NOT_CACHE_CONTEXT "services.dc_not_cache"
 #define NETDATA_SYSTEMD_DC_NOT_FOUND_CONTEXT "services.dc_not_found"
 
-#define NETDATA_LATENCY_DCSTAT_SLEEP_MS 700000ULL
+// ARAL name
+#define NETDATA_EBPF_DCSTAT_ARAL_NAME "ebpf_dcstat"
 
 enum directory_cache_indexes {
     NETDATA_DCSTAT_IDX_RATIO,
@@ -75,9 +77,11 @@ typedef struct netdata_publish_dcstat {
     netdata_dcstat_pid_t prev;
 } netdata_publish_dcstat_t;
 
-extern void *ebpf_dcstat_thread(void *ptr);
-extern void ebpf_dcstat_create_apps_charts(struct ebpf_module *em, void *ptr);
+void *ebpf_dcstat_thread(void *ptr);
+void ebpf_dcstat_create_apps_charts(struct ebpf_module *em, void *ptr);
+void ebpf_dcstat_release(netdata_publish_dcstat_t *stat);
 extern struct config dcstat_config;
 extern netdata_ebpf_targets_t dc_targets[];
+extern ebpf_local_maps_t dcstat_maps[];
 
 #endif // NETDATA_EBPF_DCSTAT_H
