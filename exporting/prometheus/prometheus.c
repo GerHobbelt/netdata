@@ -357,21 +357,21 @@ static int format_prometheus_chart_label_callback(const char *name, const char *
     return 1;
 }
 
-void format_chart_labels_prometheus(struct format_prometheus_chart_label_callback *plabel,
-                                    const char *chart,
-                                    const char *family,
-                                    const char *dim,
-                                    RRDSET *st)
-{
-    if (likely(plabel->labels_buffer))
-        buffer_reset(plabel->labels_buffer);
-    else {
-        plabel->labels_buffer = buffer_create(1024, NULL);
-    }
-    buffer_sprintf(plabel->labels_buffer, "chart=\"%s\",dimension=\"%s\",family=\"%s\"", chart, dim, family);
+// void format_chart_labels_prometheus(struct format_prometheus_chart_label_callback *plabel,
+//                                     const char *chart,
+//                                     const char *family,
+//                                     const char *dim,
+//                                     RRDSET *st)
+// {
+//     if (likely(plabel->labels_buffer))
+//         buffer_reset(plabel->labels_buffer);
+//     else {
+//         plabel->labels_buffer = buffer_create(1024, NULL);
+//     }
+//     buffer_sprintf(plabel->labels_buffer, "chart=\"%s\",dimension=\"%s\",family=\"%s\"", chart, dim, family);
 
-    rrdlabels_walkthrough_read(st->rrdlabels, format_prometheus_chart_label_callback, plabel);
-}
+//     rrdlabels_walkthrough_read(st->rrdlabels, format_prometheus_chart_label_callback, plabel);
+// }
 
 struct host_variables_callback_options {
     RRDHOST *host;
