@@ -41,7 +41,8 @@ run ./netdata-installer.sh \
   --disable-plugin-xenstat \
   --disable-exporting-kinesis \
   --disable-exporting-mongodb \
-  --disable-ml
+  --disable-ml \
+  --disable-logsmanagement
 
 # shellcheck disable=SC2015
 [ "${GITHUB_ACTIONS}" = "true" ] && echo "::group::Finishing netdata install" || true
