@@ -6,7 +6,11 @@
  */
 
 /*!
+<<<<<<<< HEAD:web/gui/v2/7514.ea3b186181ecff7f8ae5.chunk.js.LICENSE.txt
  * Chart.js v4.4.0
+========
+ * Chart.js v4.3.3
+>>>>>>>> agora-main:web/gui/v2/7514.685fae6aee82518a9737.chunk.js.LICENSE.txt
  * https://www.chartjs.org
  * (c) 2023 Chart.js Contributors
  * Released under the MIT License

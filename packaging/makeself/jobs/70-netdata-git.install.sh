@@ -9,7 +9,7 @@ cd "${NETDATA_SOURCE_PATH}" || exit 1
 if [ "${NETDATA_BUILD_WITH_DEBUG}" -eq 0 ]; then
   export CFLAGS="-ffunction-sections -fdata-sections -static -O2 -funroll-loops -I/openssl-static/include -I/libnetfilter-acct-static/include/libnetfilter_acct -I/curl-local/include/curl -I/usr/include/libmnl -pipe"
 else
-  export CFLAGS="-static -O1 -pipe -ggdb -Wall -Wextra -Wformat-signedness -DNETDATA_INTERNAL_CHECKS=1 -I/openssl-static/include -I/libnetfilter-acct-static/include/libnetfilter_acct -I/curl-local/include/curl -I/usr/include/libmnl"
+  export CFLAGS="-static -O1 -pipe -ggdb3 -Wall -Wextra -Wformat-signedness -DNETDATA_INTERNAL_CHECKS=1 -I/openssl-static/include -I/libnetfilter-acct-static/include/libnetfilter_acct -I/curl-local/include/curl -I/usr/include/libmnl"
 fi
 
 export LDFLAGS="-Wl,--gc-sections -static -L/openssl-static/lib64 -L/libnetfilter-acct-static/lib -lnetfilter_acct -L/usr/lib -lmnl -L/usr/lib -lzstd -L/curl-local/lib"
@@ -31,12 +31,17 @@ run ./netdata-installer.sh \
   --install-prefix "${NETDATA_INSTALL_PARENT}" \
   --dont-wait \
   --dont-start-it \
-  --disable-exporting-mongodb \
-  --require-cloud \
   --use-system-protobuf \
   --dont-scrub-cflags-even-though-it-may-break-things \
   --one-time-build \
-  --enable-lto
+  --enable-lto \
+  --disable-cloud \
+  --disable-telemetry \
+  --disable-dbengine \
+  --disable-plugin-xenstat \
+  --disable-exporting-kinesis \
+  --disable-exporting-mongodb \
+  --disable-ml
 
 # shellcheck disable=SC2015
 [ "${GITHUB_ACTIONS}" = "true" ] && echo "::group::Finishing netdata install" || true

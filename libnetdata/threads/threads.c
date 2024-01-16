@@ -170,6 +170,17 @@ void netdata_threads_init_for_external_plugins(size_t stacksize) {
 }
 
 // ----------------------------------------------------------------------------
+// threads init for external plugins
+
+void netdata_threads_init_for_external_plugins(size_t stacksize) {
+    size_t default_stacksize = netdata_threads_init();
+    if(default_stacksize < 1 * 1024 * 1024)
+        default_stacksize = 1 * 1024 * 1024;
+
+    netdata_threads_init_after_fork(stacksize ? stacksize : default_stacksize);
+}
+
+// ----------------------------------------------------------------------------
 // netdata_thread_create
 
 void rrdset_thread_rda_free(void);

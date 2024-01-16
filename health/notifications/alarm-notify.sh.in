@@ -1768,7 +1768,7 @@ send_alerta() {
             "event": "${event}",
             "environment": "${channel}",
             "severity": "${severity}",
-            "service": ["Netdata"],
+            "service": ["Netdata Host"],
             "group": "Performance",
             "value": "${value_string}",
             "text": "${info}",
