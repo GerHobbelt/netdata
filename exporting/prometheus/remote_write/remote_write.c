@@ -334,7 +334,6 @@ int format_dimension_prometheus_remote_write(struct instance *instance, RRDDIM *
             }
         }
 
-
         struct format_remote_write_label_callback tmp = {
             .write_request = connector_specific_data->write_request,
             .instance = instance
